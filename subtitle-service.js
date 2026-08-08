@@ -136,7 +136,7 @@ async function getSubtitleOptions(args) {
                 code: "lookup-failed",
                 config,
                 title: "Groq Subs lookup failed",
-                message: "Could not look up source subtitles for this video.",
+                message: withDetails("Could not look up source subtitles for this video.", error),
             }),
         ];
         logger.info("subtitle options resolved", {
@@ -274,7 +274,7 @@ function generatedSubtitleResponse(vtt, cacheControl = GENERATED_SUBTITLE_CACHE_
 function diagnosticGeneratedSubtitleResponse({ error, key, message, source, startedAt }) {
     const vtt = composeDiagnosticVtt({
         title: "Groq Subs error",
-        message,
+        message: withDetails(message, error),
     });
     logGeneratedSubtitleServed({
         diagnostic: true,
@@ -290,6 +290,13 @@ function diagnosticGeneratedSubtitleResponse({ error, key, message, source, star
         diagnostic: true,
         vtt,
     };
+}
+
+// A subtitle track is the only channel the viewer has: without the cause they see "something
+// went wrong" while the actual reason stays buried in the server logs.
+function withDetails(message, error) {
+    if (!error || !error.message) return message;
+    return `${message} Details: ${error.message}`;
 }
 
 function logGeneratedSubtitleServed({ cacheSource, diagnostic, error, key, source, startedAt, vtt }) {
@@ -362,7 +369,7 @@ async function buildTranslatedVtt(job) {
         groqModel: config.groqModel,
     });
     try {
-        const { translations, complete } = await translateCues(cues, config, job.progress);
+        const { translations, complete, failure } = await translateCues(cues, config, job.progress);
 
         if (!complete) {
             // Some cues could not be translated (all Groq models were rate-limited for their
@@ -372,7 +379,7 @@ async function buildTranslatedVtt(job) {
             const resumedCount = job.progress.filter((v) => v !== undefined).length;
             const vtt = composeDiagnosticVtt({
                 title: "Groq Subs chưa dịch xong",
-                message: `Đã dịch ${resumedCount}/${cues.length} dòng. Các model Groq đang bị giới hạn tốc độ. Vui lòng thử lại sau ít phút (tiến độ đã được lưu, sẽ nối tiếp).`,
+                message: `Đã dịch ${resumedCount}/${cues.length} dòng. ${incompleteReasonMessage(failure)}`,
             });
             recordSubtitleTranslation({
                 bytes: Buffer.byteLength(vtt, "utf8"),
@@ -384,6 +391,8 @@ async function buildTranslatedVtt(job) {
             logger.warn("subtitle translation incomplete, serving notice", {
                 complete: false,
                 cueCount: cues.length,
+                failureMessage: failure?.message,
+                failureReason: failure?.reason,
                 key: job.key,
                 resumedCues: resumedCount,
             });
@@ -413,6 +422,30 @@ async function buildTranslatedVtt(job) {
             targetLanguage: config.targetLanguage,
         });
         throw error;
+    }
+}
+
+// The cause matters to the viewer: a rate limit clears by itself, whereas a bad or missing API
+// key needs them to reconfigure the addon. Reporting everything as "rate-limited" (as before)
+// left them retrying a job that could never succeed.
+function incompleteReasonMessage(failure) {
+    const retryLater = "Vui lòng thử lại sau ít phút (tiến độ đã được lưu, sẽ nối tiếp).";
+
+    switch (failure?.reason) {
+        case "missing_key":
+            return "Chưa có Groq API key. Vui lòng cấu hình lại addon với API key hợp lệ.";
+        case "invalid_key":
+            return "Groq API key không hợp lệ hoặc đã bị thu hồi. Vui lòng cấu hình lại addon.";
+        case "blocked":
+            return "Groq đã từ chối yêu cầu (bị chặn). Vui lòng kiểm tra tài khoản Groq của bạn.";
+        case "rate_limited":
+            return `Các model Groq đang bị giới hạn tốc độ. ${retryLater}`;
+        case "mismatch":
+            return `Các model trả về số dòng không khớp nên bị bỏ để tránh lệch phụ đề. ${retryLater}`;
+        case "network":
+            return `Không kết nối được tới Groq. ${retryLater}`;
+        default:
+            return `Dịch thất bại: ${failure?.message || "lỗi không xác định"}. ${retryLater}`;
     }
 }
 

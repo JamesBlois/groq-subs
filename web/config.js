@@ -114,8 +114,7 @@ testButton.addEventListener("click", async () => {
 
     try {
         const url = `${location.origin}/test-groq?apiKey=${encodeProviderKey(key)}&model=${encodeURIComponent(groqModel.value)}`;
-        const response = await fetch(url);
-        const data = await response.json();
+        const data = await fetchJson(url);
         if (data.ok) {
             // A 429 means the key is valid but the chosen model is rate-limited right now. The
             // addon still works (it falls back across models), so we keep config verified but
@@ -139,7 +138,7 @@ testButton.addEventListener("click", async () => {
             updateInstallState();
         }
     } catch (err) {
-        testStatus.textContent = `✗ Lỗi kết nối: ${err.message}`;
+        testStatus.textContent = `✗ Lỗi: ${err.message}`;
         testStatus.className = "test-status error";
         configVerified = false;
         updateInstallState();
@@ -147,6 +146,27 @@ testButton.addEventListener("click", async () => {
         testButton.disabled = false;
     }
 });
+
+// A failing endpoint can answer with an error status or a non-JSON body (proxy/HTML error page).
+// response.json() alone turns both into an opaque parse error, so the page reported a "connection"
+// problem for what was really a server error. Report the status and body instead.
+async function fetchJson(url) {
+    const response = await fetch(url);
+    const body = await response.text();
+
+    let data;
+    try {
+        data = body ? JSON.parse(body) : null;
+    } catch {
+        throw new Error(`${response.status} ${response.statusText}: ${body.slice(0, 160)}`);
+    }
+
+    if (!response.ok && !data?.message && !data?.models) {
+        throw new Error(data?.error || `${response.status} ${response.statusText}`);
+    }
+    if (!data) throw new Error(`Empty response (${response.status})`);
+    return data;
+}
 
 function requireVerified() {
     if (!configVerified) {
@@ -171,8 +191,7 @@ checkModelsButton.addEventListener("click", async () => {
 
     try {
         const url = `${location.origin}/models-status?apiKey=${encodeProviderKey(key)}`;
-        const response = await fetch(url);
-        const data = await response.json();
+        const data = await fetchJson(url);
         if (!data.models) {
             modelsStatusDiv.innerHTML = `<span class="test-status error">✗ ${data.error || "Lỗi"}</span>`;
             return;
@@ -202,7 +221,7 @@ checkModelsButton.addEventListener("click", async () => {
 
         modelsStatusDiv.innerHTML = rec + rows;
     } catch (err) {
-        modelsStatusDiv.innerHTML = `<span class="test-status error">✗ Lỗi kết nối: ${err.message}</span>`;
+        modelsStatusDiv.innerHTML = `<span class="test-status error">✗ Lỗi: ${err.message}</span>`;
     } finally {
         checkModelsButton.disabled = false;
     }
