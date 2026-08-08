@@ -176,20 +176,24 @@ async function getGeneratedSubtitleResponse(key) {
         logger.info("generated subtitle build queued", { key });
         recordGeneratedSubtitleCache("miss");
         job.promise = buildTranslatedVtt(job)
-            .then((vtt) => {
-                return setCachedGeneratedSubtitle(key, vtt).then(() => {
-                    if (jobs.get(key) === job) {
-                        jobs.delete(key);
-                    }
-                    return vtt;
-                });
-            })
-            .then((vtt) => {
-                logger.info("generated subtitle cached", {
-                    bytes: Buffer.byteLength(vtt, "utf8"),
-                    key,
-                });
-                return vtt;
+            .then(({ vtt, complete }) => {
+                if (complete) {
+                    return setCachedGeneratedSubtitle(key, vtt).then(() => {
+                        if (jobs.get(key) === job) {
+                            jobs.delete(key);
+                        }
+                        logger.info("generated subtitle cached", {
+                            bytes: Buffer.byteLength(vtt, "utf8"),
+                            key,
+                        });
+                        return { vtt, cacheControl: GENERATED_SUBTITLE_CACHE_CONTROL };
+                    });
+                }
+                // Partial translation: keep the job (with progress) so the next request
+                // resumes instead of re-translating from scratch. Do NOT cache the partial VTT.
+                job.promise = null;
+                logger.warn("generated subtitle partial, will resume on next request", { key });
+                return { vtt, cacheControl: DIAGNOSTIC_SUBTITLE_CACHE_CONTROL };
             })
             .catch((error) => {
                 job.promise = null;
@@ -205,14 +209,14 @@ async function getGeneratedSubtitleResponse(key) {
     }
 
     try {
-        const vtt = await job.promise;
+        const { vtt, cacheControl } = await job.promise;
         logGeneratedSubtitleServed({
             key,
             source,
             startedAt,
             vtt,
         });
-        return generatedSubtitleResponse(vtt);
+        return generatedSubtitleResponse(vtt, cacheControl);
     } catch (error) {
         return diagnosticGeneratedSubtitleResponse({
             error,
@@ -253,9 +257,9 @@ function createSubtitleOptions(args, results, sourceLanguageSubtitles, config) {
         .slice(0, RESULT_LIMIT);
 }
 
-function generatedSubtitleResponse(vtt) {
+function generatedSubtitleResponse(vtt, cacheControl = GENERATED_SUBTITLE_CACHE_CONTROL) {
     return {
-        cacheControl: GENERATED_SUBTITLE_CACHE_CONTROL,
+        cacheControl,
         diagnostic: false,
         vtt,
     };
@@ -335,29 +339,38 @@ async function buildTranslatedVtt(job) {
         throw new Error(`No subtitle cues found for ${job.title}`);
     }
 
+    // Reuse partial progress from a previous (interrupted) attempt so we resume instead of
+    // re-translating cues that were already done — saves Groq tokens across retries.
+    if (!Array.isArray(job.progress) || job.progress.length !== cues.length) {
+        job.progress = new Array(cues.length).fill(undefined);
+    }
+    const resumedCount = job.progress.filter((v) => v !== undefined).length;
+
     logger.info("subtitle translation started", {
         cueCount: cues.length,
         key: job.key,
+        resumedCues: resumedCount,
         sourceLanguage: config.groqSourceLanguage,
         targetLanguage: config.groqTargetLanguage,
         provider: translationProvider(config),
         groqModel: config.groqModel,
     });
     try {
-        const translations = await translateCues(cues, config);
+        const { translations, complete } = await translateCues(cues, config, job.progress);
         const vtt = composeVtt(cues, translations);
         recordSubtitleTranslation({
             bytes: Buffer.byteLength(vtt, "utf8"),
             durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
             sourceLanguage: config.sourceLanguage,
-            status: "success",
+            status: complete ? "success" : "partial",
             targetLanguage: config.targetLanguage,
         });
         logger.info("subtitle translation finished", {
+            complete,
             cueCount: cues.length,
             key: job.key,
         });
-        return vtt;
+        return { vtt, complete };
     } catch (error) {
         recordSubtitleTranslation({
             bytes: 0,
