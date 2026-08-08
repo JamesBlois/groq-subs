@@ -97,6 +97,19 @@ LLM_MODELS=zhipuai/glm-5.2,deepseek-ai/deepseek-r1,qwen/qwen3-235b
 
 Check availability and quota from the web UI ("Check models quota") or `GET /status`.
 
+## Operational endpoints
+
+`GET /metrics` (Prometheus) and `GET /status` expose operational detail (in-flight jobs, source
+subtitle URLs, provider configuration) and are not public:
+
+- With `METRICS_TOKEN` set, both require `Authorization: Bearer <METRICS_TOKEN>`. Set it on any
+  deployment that is reachable from the internet.
+- Without `METRICS_TOKEN`, they are served only to callers on a private/loopback network.
+
+`GET /test-groq` and `GET /models-status` spend Groq quota, so they only fall back to the
+server's `GROQ_API_KEY` for private/loopback callers; remote callers must supply their own key
+via `?apiKey=<base64url-key>`.
+
 ### Streaming & timeouts (large models)
 
 Translation and the "Check models" probe both use **streaming** (`stream: true`). Large hosted

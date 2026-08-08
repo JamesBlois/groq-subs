@@ -28,6 +28,9 @@ const DEFAULT_CONFIGURED_ROUTER_CACHE_MAX = 100;
 const DEFAULT_CONFIGURED_ROUTER_CACHE_TTL_SECONDS = 6 * 60 * 60;
 const CONFIGURED_ROUTER_CACHE_MAX = DEFAULT_CONFIGURED_ROUTER_CACHE_MAX;
 const CONFIGURED_ROUTER_CACHE_TTL_SECONDS = DEFAULT_CONFIGURED_ROUTER_CACHE_TTL_SECONDS;
+const MODELS_STATUS_CACHE_MS = 30_000;
+const MAX_PROVIDER_KEY_LENGTH = 512;
+const ADMIN_PATHS = new Set(["/metrics", "/status"]);
 
 function createApp() {
     const app = express();
@@ -57,8 +60,14 @@ function createApp() {
 
     app.use(logRequest);
     app.use((req, res, next) => {
+        // Admin/observability endpoints must not be readable by arbitrary web origins.
+        if (ADMIN_PATHS.has(req.path)) {
+            next();
+            return;
+        }
+
         res.set("Access-Control-Allow-Origin", "*");
-        res.set("Access-Control-Allow-Headers", "*");
+        res.set("Access-Control-Allow-Headers", "Content-Type, Accept");
         res.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
 
         if (req.method === "OPTIONS") {
@@ -81,9 +90,11 @@ function createApp() {
 
     app.get("/test-groq", async (req, res, next) => {
         try {
-            const apiKey = req.query.apiKey
-                ? Buffer.from(String(req.query.apiKey).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")
-                : process.env.GROQ_API_KEY;
+            const apiKey = requestProviderKey(req);
+            if (apiKey === null) {
+                res.status(400).json({ ok: false, status: 400, message: "Invalid apiKey parameter" });
+                return;
+            }
             const result = await testGroqApiKey({
                 groqApiKey: apiKey,
                 groqModel: req.query.model,
@@ -96,7 +107,9 @@ function createApp() {
 
     // Short-lived cache so rapid repeated "Check models quota" clicks don't re-probe
     // every model (probing is slow, especially for NVIDIA models).
-    let modelsStatusCache = null; // { at, payload }
+    // Keyed by the caller's API key so one caller never sees quota state probed with another
+    // caller's key.
+    const modelsStatusCache = new LRUCache({ max: 50, ttl: MODELS_STATUS_CACHE_MS });
 
     // Probe one (provider, model) with a tiny STREAMING request. We only need the first token
     // (or stream end) to confirm the model answers — we do NOT wait for the full completion,
@@ -205,20 +218,23 @@ function createApp() {
 
     app.get("/models-status", async (req, res, next) => {
         try {
-            // Serve a cached result if it is fresh (<= 30s) — probing 10+ models across
-            // providers is slow, and quota state does not change in seconds.
-            const MODELS_STATUS_CACHE_MS = 30_000;
-            const now = Date.now();
-            if (modelsStatusCache && now - modelsStatusCache.at < MODELS_STATUS_CACHE_MS) {
-                res.json(modelsStatusCache.payload);
+            // Groq key may come from the query (encoded), or from env for local/private
+            // callers; the generic LLM provider key is always taken from env (not exposed in
+            // the URL).
+            const groqKey = requestProviderKey(req);
+            if (groqKey === null) {
+                res.status(400).json({ error: "Invalid apiKey parameter" });
                 return;
             }
 
-            // Groq key may come from the query (encoded) or env; the generic LLM provider key
-            // is always taken from env (not exposed in the URL).
-            const groqKey = req.query.apiKey
-                ? Buffer.from(String(req.query.apiKey).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")
-                : process.env.GROQ_API_KEY;
+            // Serve a cached result if it is fresh — probing 10+ models across providers is
+            // slow, and quota state does not change in seconds.
+            const cacheKey = cacheKeyForApiKey(groqKey);
+            const cached = modelsStatusCache.get(cacheKey);
+            if (cached) {
+                res.json(cached);
+                return;
+            }
 
             const providers = getProviders({ groqApiKey: groqKey });
             if (providers.length === 0 || !providers.some((p) => p.apiKey)) {
@@ -258,7 +274,7 @@ function createApp() {
                 models: probes,
                 cached: false,
             };
-            modelsStatusCache = { at: now, payload: { ...payload, cached: true } };
+            modelsStatusCache.set(cacheKey, { ...payload, cached: true });
             res.json(payload);
         } catch (error) {
             next(error);
@@ -266,6 +282,11 @@ function createApp() {
     });
 
     app.get("/status", async (req, res, next) => {
+        if (!isAdminRequestAuthorized(req)) {
+            res.status(401).json({ error: "Unauthorized" });
+            return;
+        }
+
         try {
             const jobStats = getJobsStatus();
             const cacheStats = getGeneratedSubtitleCacheStats();
@@ -305,12 +326,7 @@ function createApp() {
     });
 
     app.get("/metrics", async (req, res, next) => {
-        if (!isMetricsRequestAllowed(req)) {
-            res.status(403).json({ error: "Forbidden" });
-            return;
-        }
-
-        if (!isMetricsRequestAuthorized(req)) {
+        if (!isAdminRequestAuthorized(req)) {
             res.status(401).json({ error: "Unauthorized" });
             return;
         }
@@ -392,6 +408,29 @@ function routerCacheKey(config) {
     return crypto.createHash("sha256").update(JSON.stringify(config)).digest("hex");
 }
 
+// The Groq key may be supplied by the caller (base64url in the query string). Falling back to
+// the server's own key is only safe for local/private callers: otherwise any internet client
+// could spend the operator's quota through the public probe endpoints.
+function requestProviderKey(req) {
+    if (req.query.apiKey === undefined) {
+        return isPrivateRequest(req) ? process.env.GROQ_API_KEY : undefined;
+    }
+
+    const encoded = String(req.query.apiKey);
+    if (!encoded || encoded.length > MAX_PROVIDER_KEY_LENGTH || !/^[A-Za-z0-9\-_=]+$/.test(encoded)) {
+        return null;
+    }
+
+    return decodeProviderKey(encoded);
+}
+
+function cacheKeyForApiKey(apiKey) {
+    return crypto
+        .createHash("sha256")
+        .update(apiKey || "")
+        .digest("hex");
+}
+
 function logRequest(req, res, next) {
     const startedAt = process.hrtime.bigint();
 
@@ -404,10 +443,12 @@ function logRequest(req, res, next) {
             route,
             status: res.statusCode,
         });
+        // Log the route template, never the raw path: configured addon URLs embed the user's
+        // provider API key as a path segment.
         logger.info("http request", {
             durationMs: durationSeconds * 1000,
             method: req.method,
-            path: req.path,
+            route,
             statusCode: res.statusCode,
         });
     });
@@ -431,25 +472,30 @@ function routeLabel(req) {
     return "other";
 }
 
-function isMetricsRequestAuthorized(req) {
+// Metrics and status expose operational detail (in-flight jobs, source subtitle URLs, provider
+// configuration). With METRICS_TOKEN set they require that token; without one they are limited
+// to callers on a private network.
+function isAdminRequestAuthorized(req) {
+    if (process.env.METRICS_TOKEN) return hasValidMetricsToken(req);
+    return isPrivateRequest(req);
+}
+
+function hasValidMetricsToken(req) {
     const token = process.env.METRICS_TOKEN;
-    if (!token) return true;
-    return req.get("authorization") === `Bearer ${token}`;
+    if (!token) return false;
+
+    const provided = Buffer.from(String(req.get("authorization") || ""), "utf8");
+    const expected = Buffer.from(`Bearer ${token}`, "utf8");
+    if (provided.length !== expected.length) return false;
+
+    return crypto.timingSafeEqual(provided, expected);
 }
 
-function isMetricsRequestAllowed(req) {
-    return clientAddresses(req).some(isPrivateAddress);
-}
-
-function clientAddresses(req) {
-    const forwardedFor = String(req.get("x-forwarded-for") || "")
-        .split(",")
-        .map((address) => address.trim())
-        .filter(Boolean);
-
-    if (forwardedFor.length) return forwardedFor;
-
-    return [req.get("x-real-ip"), req.ip, req.socket && req.socket.remoteAddress].filter(Boolean);
+// Only addresses Express itself derived (honouring the `trust proxy` setting) are considered:
+// x-forwarded-for / x-real-ip are attacker-controlled and would let anyone claim to be
+// 127.0.0.1.
+function isPrivateRequest(req) {
+    return [req.ip, req.socket && req.socket.remoteAddress].filter(Boolean).some(isPrivateAddress);
 }
 
 function isPrivateAddress(address) {

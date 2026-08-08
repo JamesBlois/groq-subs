@@ -174,7 +174,7 @@ checkModelsButton.addEventListener("click", async () => {
         const response = await fetch(url);
         const data = await response.json();
         if (!data.models) {
-            modelsStatusDiv.innerHTML = `<span class="test-status error">✗ ${data.error || "Lỗi"}</span>`;
+            modelsStatusDiv.innerHTML = `<span class="test-status error">✗ ${escapeHtml(data.error || "Lỗi")}</span>`;
             return;
         }
 
@@ -191,18 +191,19 @@ checkModelsButton.addEventListener("click", async () => {
                 };
                 const lbl = labels[m.state] || labels.unknown;
                 const cooldown = m.circuitOpen ? ' <span class="model-cooldown">(cooldown)</span>' : "";
-                return `<div class="model-row ${lbl.cls}"><span class="model-name">${m.provider}:${m.model}</span><span class="model-state">${lbl.text}${cooldown}</span></div>`;
+                const name = escapeHtml(`${m.provider}:${m.model}`);
+                return `<div class="model-row ${lbl.cls}"><span class="model-name">${name}</span><span class="model-state">${lbl.text}${cooldown}</span></div>`;
             })
             .join("");
 
         const cacheNote = data.cached ? '<span class="model-cooldown">(cache 30s)</span>' : "";
         const rec = data.recommendation
-            ? `<div class="model-recommend">Khuyên dùng: <strong>${data.recommendation.provider}:${data.recommendation.model}</strong> (còn quota) ${cacheNote}</div>`
+            ? `<div class="model-recommend">Khuyên dùng: <strong>${escapeHtml(`${data.recommendation.provider}:${data.recommendation.model}`)}</strong> (còn quota) ${cacheNote}</div>`
             : `<div class="model-recommend model-bad">Tất cả model đều bị giới hạn — thử lại sau vài phút. ${cacheNote}</div>`;
 
         modelsStatusDiv.innerHTML = rec + rows;
     } catch (err) {
-        modelsStatusDiv.innerHTML = `<span class="test-status error">✗ Lỗi kết nối: ${err.message}</span>`;
+        modelsStatusDiv.innerHTML = `<span class="test-status error">✗ Lỗi kết nối: ${escapeHtml(err.message)}</span>`;
     } finally {
         checkModelsButton.disabled = false;
     }
@@ -224,6 +225,15 @@ groqApiKey.addEventListener("input", markDirty);
 restoreConfig();
 updateView();
 updateInstallState();
+
+function escapeHtml(value) {
+    return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
 
 function encodeProviderKey(value) {
     return btoa(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");

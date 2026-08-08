@@ -104,6 +104,24 @@ describe("live configured subtitle addon", function () {
             const metricsBaseUrl = `http://127.0.0.1:${metricsServer.address().port}`;
 
             assert.equal((await getResponse(`${metricsBaseUrl}/metrics`)).statusCode, 401);
+            assert.equal((await getResponse(`${metricsBaseUrl}/status`)).statusCode, 401);
+            assert.equal(
+                (
+                    await getResponse(`${metricsBaseUrl}/metrics`, {
+                        headers: { "x-forwarded-for": "127.0.0.1" },
+                    })
+                ).statusCode,
+                401,
+                "a spoofed x-forwarded-for must not bypass the token",
+            );
+            assert.equal(
+                (
+                    await getResponse(`${metricsBaseUrl}/metrics`, {
+                        headers: { authorization: "Bearer secret" },
+                    })
+                ).statusCode,
+                200,
+            );
         } finally {
             restoreEnv("METRICS_TOKEN", previousToken);
 
@@ -112,6 +130,12 @@ describe("live configured subtitle addon", function () {
                 await once(metricsServer, "close");
             }
         }
+    });
+
+    it("rejects a malformed apiKey parameter", async function () {
+        const response = await getResponse(`${baseUrl}/test-groq?apiKey=not%20base64%21`);
+        assert.equal(response.statusCode, 400);
+        assert.equal(JSON.parse(response.body).message, "Invalid apiKey parameter");
     });
 
     it("maps configured target language to Stremio subtitle language code", async function () {

@@ -19,6 +19,14 @@
 		"stremio-addon-sdk": "1.1.x",
 		"subtitle": "^4.2.2"
 	},
+	"pnpm": {
+		"overrides": {
+			"router@1>path-to-regexp": "0.1.13",
+			"external-editor>tmp": "^0.2.6",
+			"mocha>serialize-javascript": "^7.0.5",
+			"mocha>diff": "^8.0.3"
+		}
+	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
 		"eslint": "^10.4.0",
