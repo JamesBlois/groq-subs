@@ -101,16 +101,11 @@ openStremioWebButton.addEventListener("click", () => {
 });
 
 testButton.addEventListener("click", async () => {
-    const key = groqApiKey.value.trim();
-    if (!key) {
-        testStatus.textContent = "Vui lòng nhập Groq API key";
-        testStatus.className = "test-status error";
-        return;
-    }
+    const key = requireApiKey();
+    if (!key) return;
 
     testButton.disabled = true;
-    testStatus.textContent = "Đang kiểm tra...";
-    testStatus.className = "test-status";
+    setTestStatus("Đang kiểm tra...");
 
     try {
         const url = `${location.origin}/test-groq?apiKey=${encodeProviderKey(key)}&model=${encodeURIComponent(groqModel.value)}`;
@@ -121,11 +116,9 @@ testButton.addEventListener("click", async () => {
             // addon still works (it falls back across models), so we keep config verified but
             // show a warning instead of pretending everything is green.
             if (data.rateLimited) {
-                testStatus.textContent = `⚠ ${data.message}`;
-                testStatus.className = "test-status warn";
+                setTestStatus(`⚠ ${data.message}`, "warn");
             } else {
-                testStatus.textContent = `✓ ${data.message} (model: ${data.model})`;
-                testStatus.className = "test-status success";
+                setTestStatus(`✓ ${data.message} (model: ${data.model})`, "success");
             }
             // Test succeeded: persist this config and unlock install so the installed addon
             // always uses the latest verified configuration.
@@ -133,20 +126,33 @@ testButton.addEventListener("click", async () => {
             saveConfig();
             updateInstallState();
         } else {
-            testStatus.textContent = `✗ ${data.message || "API key không hợp lệ"}`;
-            testStatus.className = "test-status error";
+            setTestStatus(`✗ ${data.message || "API key không hợp lệ"}`, "error");
             configVerified = false;
             updateInstallState();
         }
     } catch (err) {
-        testStatus.textContent = `✗ Lỗi kết nối: ${err.message}`;
-        testStatus.className = "test-status error";
+        setTestStatus(`✗ Lỗi kết nối: ${err.message}`, "error");
         configVerified = false;
         updateInstallState();
     } finally {
         testButton.disabled = false;
     }
 });
+
+function setTestStatus(text, variant = "") {
+    testStatus.textContent = text;
+    testStatus.className = variant ? `test-status ${variant}` : "test-status";
+}
+
+// The API key is required by both the key test and the model-quota check.
+function requireApiKey() {
+    const key = groqApiKey.value.trim();
+    if (!key) {
+        setTestStatus("Vui lòng nhập Groq API key", "error");
+        return "";
+    }
+    return key;
+}
 
 function requireVerified() {
     if (!configVerified) {
@@ -158,12 +164,8 @@ function requireVerified() {
 }
 
 checkModelsButton.addEventListener("click", async () => {
-    const key = groqApiKey.value.trim();
-    if (!key) {
-        testStatus.textContent = "Vui lòng nhập Groq API key";
-        testStatus.className = "test-status error";
-        return;
-    }
+    const key = requireApiKey();
+    if (!key) return;
 
     checkModelsButton.disabled = true;
     modelsStatusDiv.classList.remove("hidden");
@@ -212,8 +214,7 @@ checkModelsButton.addEventListener("click", async () => {
 function markDirty() {
     configVerified = false;
     updateInstallState();
-    testStatus.textContent = "";
-    testStatus.className = "test-status";
+    setTestStatus("");
 }
 
 source.addEventListener("change", markDirty);

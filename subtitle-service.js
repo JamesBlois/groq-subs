@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 const { Buffer } = require("buffer");
-const { LRUCache } = require("lru-cache");
 const { getSubtitleConfig } = require("./lib/config");
+const { envPositiveInteger } = require("./lib/env");
 const { composeDiagnosticVtt, createDiagnosticSubtitleOption } = require("./lib/diagnostic-subtitle");
 const { getCachedGeneratedSubtitle, setCachedGeneratedSubtitle } = require("./lib/generated-subtitle-cache");
 const { fetchText } = require("./lib/http-client");
@@ -16,20 +16,18 @@ const {
 const { getPublicBaseUrl } = require("./lib/public-url");
 const { composeVtt, parseSubtitleCues } = require("./lib/subtitle-parser");
 const { searchPublicStremioOpenSubtitles } = require("./lib/stremio-subtitles");
+const { elapsedMs, elapsedSeconds, startTimer } = require("./lib/timing");
 const { translateCues } = require("./lib/translator");
 const { translationProvider } = require("./lib/translator");
-const RESULT_LIMIT = Number(process.env.SUBTITLE_RESULT_LIMIT || 3);
+const { createTtlCache } = require("./lib/ttl-cache");
+const RESULT_LIMIT = envPositiveInteger("SUBTITLE_RESULT_LIMIT", 3);
 const GENERATED_SUBTITLE_CACHE_CONTROL = "public, max-age=86400";
 const DIAGNOSTIC_SUBTITLE_CACHE_CONTROL = "no-store";
 const DEFAULT_JOB_MAX = 1000;
 const DEFAULT_JOB_TTL_SECONDS = 24 * 60 * 60;
 const JOB_MAX = DEFAULT_JOB_MAX;
 const JOB_TTL_SECONDS = DEFAULT_JOB_TTL_SECONDS;
-const jobs = new LRUCache({
-    max: JOB_MAX,
-    ttl: JOB_TTL_SECONDS * 1000,
-    updateAgeOnGet: true,
-});
+const jobs = createTtlCache({ max: JOB_MAX, ttlSeconds: JOB_TTL_SECONDS });
 
 async function getSubtitleOptions(args) {
     const config = getSubtitleConfig(args.config || (args.extra && args.extra.__config));
@@ -152,7 +150,7 @@ async function getSubtitleOptions(args) {
 }
 
 async function getGeneratedSubtitleResponse(key) {
-    const startedAt = process.hrtime.bigint();
+    const startedAt = startTimer();
     const cachedSubtitle = await getCachedGeneratedSubtitle(key);
     if (cachedSubtitle) {
         logger.debug("generated subtitle cache hit", { key, source: cachedSubtitle.source });
@@ -297,7 +295,7 @@ function logGeneratedSubtitleServed({ cacheSource, diagnostic, error, key, sourc
         bytes: Buffer.byteLength(vtt, "utf8"),
         cacheSource,
         diagnostic,
-        durationMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
+        durationMs: elapsedMs(startedAt),
         error,
         key,
         source,
@@ -332,7 +330,7 @@ function createSubtitleOption(args, subtitle, config) {
 
 async function buildTranslatedVtt(job) {
     const config = getSubtitleConfig(job.config);
-    const startedAt = process.hrtime.bigint();
+    const startedAt = startTimer();
     logger.info("source subtitle download started", {
         key: job.key,
         subtitleUrl: job.subtitleUrl,
@@ -350,7 +348,7 @@ async function buildTranslatedVtt(job) {
     if (!Array.isArray(job.progress) || job.progress.length !== cues.length) {
         job.progress = new Array(cues.length).fill(undefined);
     }
-    const resumedCount = job.progress.filter((v) => v !== undefined).length;
+    const resumedCount = translatedCueCount(job.progress);
 
     logger.info("subtitle translation started", {
         cueCount: cues.length,
@@ -369,14 +367,14 @@ async function buildTranslatedVtt(job) {
             // chunk). Never serve the untranslated (source-language) text: show a Vietnamese
             // notice instead. Progress for the translated cues is already saved on the job, so
             // the next request resumes and only re-translates the missing cues.
-            const resumedCount = job.progress.filter((v) => v !== undefined).length;
+            const resumedCount = translatedCueCount(job.progress);
             const vtt = composeDiagnosticVtt({
                 title: "Groq Subs chưa dịch xong",
                 message: `Đã dịch ${resumedCount}/${cues.length} dòng. Các model Groq đang bị giới hạn tốc độ. Vui lòng thử lại sau ít phút (tiến độ đã được lưu, sẽ nối tiếp).`,
             });
             recordSubtitleTranslation({
                 bytes: Buffer.byteLength(vtt, "utf8"),
-                durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
+                durationSeconds: elapsedSeconds(startedAt),
                 sourceLanguage: config.sourceLanguage,
                 status: "partial",
                 targetLanguage: config.targetLanguage,
@@ -393,7 +391,7 @@ async function buildTranslatedVtt(job) {
         const vtt = composeVtt(cues, translations);
         recordSubtitleTranslation({
             bytes: Buffer.byteLength(vtt, "utf8"),
-            durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
+            durationSeconds: elapsedSeconds(startedAt),
             sourceLanguage: config.sourceLanguage,
             status: "success",
             targetLanguage: config.targetLanguage,
@@ -407,7 +405,7 @@ async function buildTranslatedVtt(job) {
     } catch (error) {
         recordSubtitleTranslation({
             bytes: 0,
-            durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
+            durationSeconds: elapsedSeconds(startedAt),
             sourceLanguage: config.sourceLanguage,
             status: "failure",
             targetLanguage: config.targetLanguage,
@@ -420,11 +418,16 @@ function hashKey(value) {
     return crypto.createHash("sha1").update(JSON.stringify(value)).digest("hex").slice(0, 24);
 }
 
+// Cues already translated in this (possibly partial) run; untranslated slots stay undefined.
+function translatedCueCount(progress) {
+    return Array.isArray(progress) ? progress.filter((value) => value !== undefined).length : 0;
+}
+
 function getJobsStatus() {
     const entries = [];
     for (const [key, job] of jobs) {
         const total = Array.isArray(job.progress) ? job.progress.length : 0;
-        const done = Array.isArray(job.progress) ? job.progress.filter((v) => v !== undefined).length : 0;
+        const done = translatedCueCount(job.progress);
         entries.push({
             key,
             title: job.title,

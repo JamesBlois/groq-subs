@@ -1,10 +1,8 @@
 #!/usr/bin/env node
 
-const { Buffer } = require("buffer");
 const crypto = require("crypto");
 const path = require("path");
 const express = require("express");
-const { LRUCache } = require("lru-cache");
 const { getRouter } = require("stremio-addon-sdk");
 const addonInterface = require("./addon");
 const { createAddonInterface } = require("./addon");
@@ -18,11 +16,15 @@ const {
     baseUrlFromRequest,
     withRequestBaseUrl,
 } = require("./lib/public-url");
+const { decodeProviderKey, groqApiKeyFromQuery } = require("./lib/provider-key");
 const { createRateLimiters } = require("./lib/rate-limit");
+const { CONFIGURED_SUBTITLES_PATTERN } = require("./lib/route-paths");
+const { elapsedSeconds, startTimer } = require("./lib/timing");
+const { createTtlCache } = require("./lib/ttl-cache");
 const { renderConfigPage } = require("./lib/web-page");
 const { getGeneratedSubtitleResponse, getJobsStatus } = require("./subtitle-service");
 const { getGeneratedSubtitleCacheStats } = require("./lib/generated-subtitle-cache");
-const { testGroqApiKey, DEFAULT_GROQ_MODEL, breaker, getProviders } = require("./lib/groq-translator");
+const { testGroqApiKey, DEFAULT_GROQ_MODEL, breaker, getProviders, probeModel } = require("./lib/groq-translator");
 
 const DEFAULT_CONFIGURED_ROUTER_CACHE_MAX = 100;
 const DEFAULT_CONFIGURED_ROUTER_CACHE_TTL_SECONDS = 6 * 60 * 60;
@@ -36,10 +38,9 @@ function createApp() {
     const imgDir = path.join(__dirname, "img");
     const publicDir = path.join(__dirname, "assets");
     const webDir = path.join(__dirname, "web");
-    const configuredRouters = new LRUCache({
+    const configuredRouters = createTtlCache({
         max: CONFIGURED_ROUTER_CACHE_MAX,
-        ttl: CONFIGURED_ROUTER_CACHE_TTL_SECONDS * 1000,
-        updateAgeOnGet: true,
+        ttlSeconds: CONFIGURED_ROUTER_CACHE_TTL_SECONDS,
     });
 
     const rateLimiters = createRateLimiters();
@@ -81,11 +82,8 @@ function createApp() {
 
     app.get("/test-groq", async (req, res, next) => {
         try {
-            const apiKey = req.query.apiKey
-                ? Buffer.from(String(req.query.apiKey).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")
-                : process.env.GROQ_API_KEY;
             const result = await testGroqApiKey({
-                groqApiKey: apiKey,
+                groqApiKey: groqApiKeyFromQuery(req.query.apiKey),
                 groqModel: req.query.model,
             });
             res.status(result.ok ? 200 : result.status || 400).json(result);
@@ -97,111 +95,6 @@ function createApp() {
     // Short-lived cache so rapid repeated "Check models quota" clicks don't re-probe
     // every model (probing is slow, especially for NVIDIA models).
     let modelsStatusCache = null; // { at, payload }
-
-    // Probe one (provider, model) with a tiny STREAMING request. We only need the first token
-    // (or stream end) to confirm the model answers — we do NOT wait for the full completion,
-    // which is what made large NVIDIA models (Nemotron, MiniMax, GLM, DeepSeek) report
-    // "⏱ Hết giờ": their time-to-first-token exceeds a non-streaming wait. Streaming flushes
-    // immediately, so a live-but-slow model is correctly reported as available. A per-probe
-    // timeout still guards against a genuinely dead connection so one model cannot block the
-    // dashboard.
-    const PROBE_TIMEOUT_MS = Number(process.env.PROBE_TIMEOUT_MS || 20_000);
-    async function probeModel(provider, model) {
-        const modelKey = `${provider.id}:${model}`;
-        // Skip the live probe for models already known to be in rate-limit cooldown: their
-        // state is already known and probing them just wastes a slow request.
-        if (breaker.isOpen(modelKey)) {
-            return {
-                provider: provider.id,
-                model,
-                state: "rate_limited",
-                circuitOpen: true,
-                message: "in cooldown (recently rate-limited)",
-                status: 429,
-            };
-        }
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
-        try {
-            const response = await fetch(provider.baseUrl, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${provider.apiKey}`,
-                    Accept: "text/event-stream",
-                },
-                body: JSON.stringify({
-                    model,
-                    messages: [
-                        { role: "system", content: "You are a translation assistant. Reply with the single word: ok" },
-                        { role: "user", content: "ping" },
-                    ],
-                    temperature: 0,
-                    max_tokens: 5,
-                    stream: true,
-                }),
-                signal: controller.signal,
-            });
-
-            if (!response.ok) {
-                // Error responses are regular JSON, not a stream.
-                const data = await response.json().catch(() => ({}));
-                let state = "unknown";
-                if (response.status === 429) state = "rate_limited";
-                else if (response.status === 403) state = "blocked";
-                else if (response.status === 401) state = "invalid_key";
-                return {
-                    provider: provider.id,
-                    model,
-                    state,
-                    circuitOpen: breaker.isOpen(modelKey),
-                    message: data.error?.message,
-                    status: response.status,
-                };
-            }
-
-            // A 200 with a stream: any chunk received => the model is live and answering.
-            // Resolve as available without consuming the (potentially long) rest of the stream.
-            await firstStreamChunk(response);
-            return {
-                provider: provider.id,
-                model,
-                state: "available",
-                circuitOpen: breaker.isOpen(modelKey),
-                message: undefined,
-                status: 200,
-            };
-        } catch (err) {
-            const timedOut = err.name === "AbortError";
-            return {
-                provider: provider.id,
-                model,
-                state: timedOut ? "timeout" : "error",
-                circuitOpen: breaker.isOpen(modelKey),
-                message: timedOut ? `no response within ${PROBE_TIMEOUT_MS / 1000}s` : err.message,
-                status: 0,
-            };
-        } finally {
-            clearTimeout(timer);
-        }
-    }
-
-    // Resolve as soon as the SSE stream yields its first data chunk, then stop reading. For a
-    // provider that buffers the whole response (no body / non-SSE), fall back to json() so the
-    // probe still resolves instead of hanging.
-    async function firstStreamChunk(response) {
-        if (!response.body) {
-            await response.json().catch(() => ({}));
-            return;
-        }
-        const reader = response.body.getReader();
-        try {
-            const { value } = await reader.read();
-            if (!value) await response.json().catch(() => ({}));
-        } finally {
-            reader.releaseLock?.();
-        }
-    }
 
     app.get("/models-status", async (req, res, next) => {
         try {
@@ -216,11 +109,7 @@ function createApp() {
 
             // Groq key may come from the query (encoded) or env; the generic LLM provider key
             // is always taken from env (not exposed in the URL).
-            const groqKey = req.query.apiKey
-                ? Buffer.from(String(req.query.apiKey).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")
-                : process.env.GROQ_API_KEY;
-
-            const providers = getProviders({ groqApiKey: groqKey });
+            const providers = getProviders({ groqApiKey: groqApiKeyFromQuery(req.query.apiKey) });
             if (providers.length === 0 || !providers.some((p) => p.apiKey)) {
                 res.status(401).json({ error: "Missing API key (set GROQ_API_KEY or LLM_API_KEY)" });
                 return;
@@ -393,10 +282,10 @@ function routerCacheKey(config) {
 }
 
 function logRequest(req, res, next) {
-    const startedAt = process.hrtime.bigint();
+    const startedAt = startTimer();
 
     res.on("finish", () => {
-        const durationSeconds = Number(process.hrtime.bigint() - startedAt) / 1_000_000_000;
+        const durationSeconds = elapsedSeconds(startedAt);
         const route = routeLabel(req);
         recordHttpRequest({
             durationSeconds,
@@ -423,7 +312,7 @@ function routeLabel(req) {
     if (req.path.startsWith("/public/")) return "/public/*";
     if (req.path.startsWith("/generated-subtitles/")) return "/generated-subtitles/:key.vtt";
     if (req.path.startsWith("/diagnostic-subtitles/")) return "/diagnostic-subtitles/:payload.vtt";
-    if (/^\/configure\/[^/]+\/[^/]+\/subtitles\//.test(req.path)) {
+    if (CONFIGURED_SUBTITLES_PATTERN.test(req.path)) {
         return "/configure/:sourceLang/:targetLang/subtitles/*";
     }
     if (/^\/configure\/[^/]+\/[^/]+/.test(req.path)) return "/configure/:sourceLang/:targetLang/*";
@@ -466,10 +355,6 @@ function isPrivateAddress(address) {
         ip.startsWith("fc") ||
         ip.startsWith("fd")
     );
-}
-
-function decodeProviderKey(value) {
-    return Buffer.from(String(value).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
 }
 
 if (require.main === module) {
