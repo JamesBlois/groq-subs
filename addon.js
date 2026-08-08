@@ -10,15 +10,10 @@ const manifest = {
     resources: ["subtitles"],
     types: ["movie", "series"],
     name: "Groq Subs",
-    logo: "https://raw.githubusercontent.com/awerks/stremio-double-subtitles/main/assets/logo.png",
+    logo: "https://raw.githubusercontent.com/JamesBlois/groq-subs/main/assets/logo.png",
     description: "Phụ đề Vietsub AI cho Stremio (dịch bằng Groq)",
     behaviorHints: {
         configurable: true,
-    },
-    stremioAddonsConfig: {
-        issuer: "https://stremio-addons.net",
-        signature:
-            "eyJhbGciOiJkaXIiLCJlbmMiOiJBMTI4Q0JDLUhTMjU2In0..lZOE3jDOfPKJ6JqA06j3Tw.M1u9EjpQcpG9phA3owATbdKoqryengZhgSCmLP7a5USGOvSqMJpX_FBBvqs7KSmz69Gx0i1L299Pc6q15MlgPFX_fr3Lc8YPCIwszypbCDYvO9AEFUlYYaFDGf3NYgC2.eSeBQQsFsOdm2TLdBypbow",
     },
 };
 function createAddonInterface(config) {

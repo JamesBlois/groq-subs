@@ -42,16 +42,22 @@ async function getSubtitleOptions(args) {
 
     try {
         // Ép OpenSubtitles v3 trả về sub của cả Tiếng Anh, Trung, Hàn, Đức, Nhật...
+        // Request subtitles for the chosen source language. Use the Stremio 3-letter code so
+        // OpenSubtitles returns matching candidates for ANY source language (not just a fixed
+        // list). Empty/unknown -> "all" so we still get results to filter.
+        const requestedSourceLang = normalizeStremioLanguage(config.sourceLanguage || "en");
+        const sublanguageid = requestedSourceLang || "all";
+
         const modifiedArgs = {
             ...args,
             config: {
                 ...args.config,
-                sourceLanguage: "all",
-                stremioSourceLanguage: "all",
+                sourceLanguage: requestedSourceLang,
+                stremioSourceLanguage: requestedSourceLang,
             },
             extra: {
                 ...(args.extra || {}),
-                sublanguageid: "eng,kor,zho,chi,deu,jpn,fre,spa",
+                sublanguageid,
             },
         };
 

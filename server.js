@@ -24,13 +24,8 @@ const CONFIGURED_ROUTER_CACHE_TTL_SECONDS = DEFAULT_CONFIGURED_ROUTER_CACHE_TTL_
 
 function createApp() {
     const app = express();
-    app.set("trust proxy", 1);
-    process.env.EXPRESS_RATE_LIMIT_ALLOW_X_FORWARDED_FOR_HEADER = "true";
-    app.use((req, res, next) => {
-        req.headers["x-forwarded-proto"] = "https";
-        req.headers.host = "stremio-one-subtitles.onrender.com";
-        next();
-    });
+    app.set("trust proxy", getTrustProxySetting());
+
     const imgDir = path.join(__dirname, "img");
     const publicDir = path.join(__dirname, "assets");
     const webDir = path.join(__dirname, "web");
@@ -39,8 +34,6 @@ function createApp() {
         ttl: CONFIGURED_ROUTER_CACHE_TTL_SECONDS * 1000,
         updateAgeOnGet: true,
     });
-
-    app.set("trust proxy", getTrustProxySetting());
 
     const rateLimiters = createRateLimiters();
 
