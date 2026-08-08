@@ -38,6 +38,59 @@ describe("subtitle service", function () {
         assert.doesNotMatch(subtitle.vtt, /Details:/);
     });
 
+    it("returns only ONE Groq Sub subtitle option (no duplicate buttons)", async function () {
+        global.fetch = async () => ({
+            ok: true,
+            text: async () =>
+                JSON.stringify({
+                    subtitles: [
+                        { id: "1", lang: "eng", url: "https://example.com/a.vtt" },
+                        { id: "2", lang: "eng", url: "https://example.com/b.vtt" },
+                        { id: "3", lang: "eng", url: "https://example.com/c.vtt" },
+                        { id: "4", lang: "eng", url: "https://example.com/d.vtt" },
+                    ],
+                }),
+        });
+
+        const response = await getSubtitleOptions({
+            config: { sourceLang: "en", targetLang: "vi", translationProvider: "groq" },
+            id: "tt456",
+            type: "movie",
+        });
+
+        assert.equal(response.subtitles.length, 1, "exactly one Groq Sub option must be returned");
+        assert.match(response.subtitles[0].id, /^opensubtitles-v3-/);
+        assert.equal(response.subtitles[0].lang, "vie");
+    });
+
+    it("stores the movie id/type on the job and reports rich progress in getJobsStatus", async function () {
+        const { getJobsStatus } = require("../subtitle-service");
+        global.fetch = async () => ({
+            ok: true,
+            text: async () =>
+                JSON.stringify({
+                    subtitles: [{ id: "77", lang: "eng", url: "https://example.com/sub.vtt" }],
+                }),
+        });
+
+        await getSubtitleOptions({
+            config: { sourceLang: "en", targetLang: "vi", translationProvider: "groq", groqApiKey: "k" },
+            id: "tt9999:2:3",
+            type: "series",
+        });
+
+        const status = getJobsStatus();
+        const job = status.jobs.find((j) => j.videoId === "tt9999:2:3");
+        assert.ok(job, "job for the requested video must exist");
+        assert.equal(job.videoType, "series");
+        assert.equal(job.state, "queued");
+        // sourceLanguage is normalized to the Stremio 3-letter code on the job; targetLanguage
+        // is kept as configured. groqModel reflects the configured/selected model.
+        assert.equal(job.config.sourceLanguage, "eng");
+        assert.equal(job.config.targetLanguage, "vi");
+        assert.equal(job.config.groqModel, "llama-3.3-70b-versatile");
+    });
+
     it("returns a diagnostic subtitle option when source language subtitles are unavailable", async function () {
         global.fetch = async () => ({
             ok: true,

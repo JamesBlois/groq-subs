@@ -45,7 +45,7 @@ describe("live configured subtitle addon", function () {
     });
 
     it("serves a status dashboard with provider + circuit-breaker state", async function () {
-        const status = await getJson(`${baseUrl}/status`);
+        const status = await getJson(`${baseUrl}/status.json`);
         assert.equal(status.addon, "Groq Subs");
         assert.ok(Array.isArray(status.providers) && status.providers.length > 0);
         assert.equal(status.providers[0].id, "groq");
@@ -53,6 +53,28 @@ describe("live configured subtitle addon", function () {
         assert.equal(typeof status.providers[0].models[0].circuitOpen, "boolean");
         assert.ok(status.jobs && typeof status.jobs.activeJobCount === "number");
         assert.ok(status.cache && typeof status.cache.memoryEntryCount === "number");
+    });
+
+    it("serves an HTML status dashboard at /status for browsers", async function () {
+        const response = await getResponse(`${baseUrl}/status`);
+        assert.equal(response.statusCode, 200);
+        assert.match(response.headers["content-type"], /html/);
+        assert.match(response.body, /Trạng thái dịch/);
+        assert.match(response.body, /\/assets\/dashboard\.js/);
+    });
+
+    it("returns JSON from /status when Accept: application/json is sent", async function () {
+        const http = require("http");
+        const body = await new Promise((resolve, reject) => {
+            http.get(`${baseUrl}/status`, { headers: { Accept: "application/json" } }, (res) => {
+                let data = "";
+                res.setEncoding("utf8");
+                res.on("data", (c) => (data += c));
+                res.on("end", () => resolve(data));
+            }).on("error", reject);
+        });
+        const status = JSON.parse(body);
+        assert.equal(status.addon, "Groq Subs");
     });
 
     it("rate limits repeated requests", async function () {

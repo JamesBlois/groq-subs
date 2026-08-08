@@ -18,7 +18,7 @@ const { composeVtt, parseSubtitleCues } = require("./lib/subtitle-parser");
 const { searchPublicStremioOpenSubtitles } = require("./lib/stremio-subtitles");
 const { translateCues } = require("./lib/translator");
 const { translationProvider } = require("./lib/translator");
-const RESULT_LIMIT = Number(process.env.SUBTITLE_RESULT_LIMIT || 3);
+const RESULT_LIMIT = Number(process.env.SUBTITLE_RESULT_LIMIT || 1);
 const GENERATED_SUBTITLE_CACHE_CONTROL = "public, max-age=86400";
 const DIAGNOSTIC_SUBTITLE_CACHE_CONTROL = "no-store";
 const DEFAULT_JOB_MAX = 1000;
@@ -94,8 +94,12 @@ async function getSubtitleOptions(args) {
             targetLanguage: config.targetLanguage,
             type: args.type,
         });
-        // Tạo options sub với sourceLanguage lấy động từ từng file sub thay vì config cố định
-        const subtitles = sourceLanguageSubtitles.length
+        // Tạo options sub với sourceLanguage lấy động từ từng file sub thay vì config cố định.
+        // Apply RESULT_LIMIT to the FINAL list so the addon exposes a single "Groq Sub"
+        // subtitle entry per video (no duplicate / conflicting buttons). Previously the limit
+        // was applied per-source-subtitle inside createSubtitleOptions, which had no effect on
+        // the total count when each sub produced one option.
+        const subtitleOptions = sourceLanguageSubtitles.length
             ? sourceLanguageSubtitles.flatMap((sub) => {
                   const dynamicConfig = {
                       ...config,
@@ -104,6 +108,7 @@ async function getSubtitleOptions(args) {
                   return createSubtitleOptions(args, results, [sub], dynamicConfig);
               })
             : createSubtitleOptions(args, results, [], config);
+        const subtitles = subtitleOptions.slice(0, RESULT_LIMIT);
         recordSubtitleLookup({
             sourceLanguage: config.sourceLanguage,
             status: "success",
@@ -319,7 +324,18 @@ function createSubtitleOption(args, subtitle, config) {
             key,
             config,
             subtitleUrl: subtitle.url,
+            subtitleId: subtitle.id,
+            // Stremio's content id (imdb/tmdb) + type so the status dashboard can show
+            // WHICH movie/series is being translated, not just an opaque subtitle id.
+            videoId: args.id,
+            videoType: args.type,
             title: `OpenSubtitles v3 ${subtitle.id}`,
+            state: "queued",
+            progress: undefined,
+            totalCues: 0,
+            error: undefined,
+            startedAt: undefined,
+            updatedAt: undefined,
         });
     }
 
@@ -333,6 +349,10 @@ function createSubtitleOption(args, subtitle, config) {
 async function buildTranslatedVtt(job) {
     const config = getSubtitleConfig(job.config);
     const startedAt = process.hrtime.bigint();
+    job.startedAt = job.startedAt || Date.now();
+    job.updatedAt = Date.now();
+    job.state = "translating";
+    job.error = undefined;
     logger.info("source subtitle download started", {
         key: job.key,
         subtitleUrl: job.subtitleUrl,
@@ -345,12 +365,14 @@ async function buildTranslatedVtt(job) {
         throw new Error(`No subtitle cues found for ${job.title}`);
     }
 
+    job.totalCues = cues.length;
     // Reuse partial progress from a previous (interrupted) attempt so we resume instead of
     // re-translating cues that were already done — saves Groq tokens across retries.
     if (!Array.isArray(job.progress) || job.progress.length !== cues.length) {
         job.progress = new Array(cues.length).fill(undefined);
     }
     const resumedCount = job.progress.filter((v) => v !== undefined).length;
+    job.updatedAt = Date.now();
 
     logger.info("subtitle translation started", {
         cueCount: cues.length,
@@ -370,6 +392,8 @@ async function buildTranslatedVtt(job) {
             // notice instead. Progress for the translated cues is already saved on the job, so
             // the next request resumes and only re-translates the missing cues.
             const resumedCount = job.progress.filter((v) => v !== undefined).length;
+            job.state = "partial";
+            job.updatedAt = Date.now();
             const vtt = composeDiagnosticVtt({
                 title: "Groq Subs chưa dịch xong",
                 message: `Đã dịch ${resumedCount}/${cues.length} dòng. Các model Groq đang bị giới hạn tốc độ. Vui lòng thử lại sau ít phút (tiến độ đã được lưu, sẽ nối tiếp).`,
@@ -391,6 +415,8 @@ async function buildTranslatedVtt(job) {
         }
 
         const vtt = composeVtt(cues, translations);
+        job.state = "complete";
+        job.updatedAt = Date.now();
         recordSubtitleTranslation({
             bytes: Buffer.byteLength(vtt, "utf8"),
             durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
@@ -405,6 +431,9 @@ async function buildTranslatedVtt(job) {
         });
         return { vtt, complete };
     } catch (error) {
+        job.state = "failed";
+        job.error = error.message || String(error);
+        job.updatedAt = Date.now();
         recordSubtitleTranslation({
             bytes: 0,
             durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
@@ -423,20 +452,36 @@ function hashKey(value) {
 function getJobsStatus() {
     const entries = [];
     for (const [key, job] of jobs) {
-        const total = Array.isArray(job.progress) ? job.progress.length : 0;
+        const total = Array.isArray(job.progress) ? job.progress.length : job.totalCues || 0;
         const done = Array.isArray(job.progress) ? job.progress.filter((v) => v !== undefined).length : 0;
+        const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+        const inFlight = Boolean(job.promise);
+        // config stored on the job is the full getSubtitleConfig() output, which uses
+        // sourceLanguage / targetLanguage / groqModel (NOT sourceLang/targetLang).
+        const cfg = job.config || {};
         entries.push({
             key,
             title: job.title,
             subtitleUrl: job.subtitleUrl,
+            subtitleId: job.subtitleId,
+            videoId: job.videoId,
+            videoType: job.videoType,
             cueCount: total,
             translatedCues: done,
+            percent,
             complete: total > 0 && done === total,
-            inFlight: Boolean(job.promise),
+            inFlight,
+            // Explicit state for the UI: queued / translating / partial / complete / failed.
+            // An in-flight build overrides the stored state so the dashboard shows "translating"
+            // even between sub-state transitions.
+            state: inFlight ? "translating" : job.state || "queued",
+            error: job.error,
+            startedAt: job.startedAt,
+            updatedAt: job.updatedAt,
             config: {
-                sourceLang: job.config?.sourceLang,
-                targetLang: job.config?.targetLang,
-                groqModel: job.config?.groqModel,
+                sourceLanguage: cfg.sourceLanguage,
+                targetLanguage: cfg.targetLanguage,
+                groqModel: cfg.groqModel,
             },
         });
     }
