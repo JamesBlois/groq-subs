@@ -22,7 +22,7 @@ const { createRateLimiters } = require("./lib/rate-limit");
 const { renderConfigPage } = require("./lib/web-page");
 const { getGeneratedSubtitleResponse, getJobsStatus } = require("./subtitle-service");
 const { getGeneratedSubtitleCacheStats } = require("./lib/generated-subtitle-cache");
-const { testGroqApiKey, GROQ_MODELS, DEFAULT_GROQ_MODEL, breaker, getProviders } = require("./lib/groq-translator");
+const { testGroqApiKey, DEFAULT_GROQ_MODEL, breaker, getProviders } = require("./lib/groq-translator");
 
 const DEFAULT_CONFIGURED_ROUTER_CACHE_MAX = 100;
 const DEFAULT_CONFIGURED_ROUTER_CACHE_TTL_SECONDS = 6 * 60 * 60;
@@ -94,37 +94,76 @@ function createApp() {
         }
     });
 
+    // Probe one (provider, model) with a tiny request and return a state object.
+    async function probeModel(provider, model) {
+        const modelKey = `${provider.id}:${model}`;
+        try {
+            const response = await fetch(provider.baseUrl, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${provider.apiKey}`,
+                },
+                body: JSON.stringify({
+                    model,
+                    messages: [
+                        { role: "system", content: "You are a translation assistant. Reply with the single word: ok" },
+                        { role: "user", content: "ping" },
+                    ],
+                    temperature: 0,
+                    max_tokens: 5,
+                }),
+            });
+            const data = await response.json().catch(() => ({}));
+            let state = "unknown";
+            if (response.ok) state = "available";
+            else if (response.status === 429) state = "rate_limited";
+            else if (response.status === 403) state = "blocked";
+            else if (response.status === 401) state = "invalid_key";
+            return {
+                provider: provider.id,
+                model,
+                state,
+                circuitOpen: breaker.isOpen(modelKey),
+                message: data.error?.message,
+                status: response.status,
+            };
+        } catch (err) {
+            return {
+                provider: provider.id,
+                model,
+                state: "error",
+                circuitOpen: breaker.isOpen(modelKey),
+                message: err.message,
+                status: 0,
+            };
+        }
+    }
+
     app.get("/models-status", async (req, res, next) => {
         try {
-            const apiKey = req.query.apiKey
+            // Groq key may come from the query (encoded) or env; the generic LLM provider key
+            // is always taken from env (not exposed in the URL).
+            const groqKey = req.query.apiKey
                 ? Buffer.from(String(req.query.apiKey).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")
                 : process.env.GROQ_API_KEY;
 
-            if (!apiKey) {
-                res.status(401).json({ error: "Missing Groq API key" });
+            const providers = getProviders({ groqApiKey: groqKey });
+            if (providers.length === 0 || !providers.some((p) => p.apiKey)) {
+                res.status(401).json({ error: "Missing API key (set GROQ_API_KEY or LLM_API_KEY)" });
                 return;
             }
 
-            // Probe each model in parallel with a tiny request. Each returns ok/limited/blocked.
-            const probes = await Promise.all(
-                GROQ_MODELS.map(async (model) => {
-                    const result = await testGroqApiKey({ groqApiKey: apiKey, groqModel: model });
-                    let state = "unknown";
-                    if (result.ok) state = "available";
-                    else if (result.status === 429) state = "rate_limited";
-                    else if (result.status === 403) state = "blocked";
-                    else if (result.status === 401) state = "invalid_key";
-                    return {
-                        model,
-                        state,
-                        circuitOpen: breaker.isOpen(model),
-                        message: result.message,
-                        status: result.status,
-                    };
-                }),
-            );
+            const probes = [];
+            for (const provider of providers) {
+                if (!provider.apiKey) continue;
+                const results = await Promise.all(provider.models.map((model) => probeModel(provider, model)));
+                probes.push(...results);
+            }
 
-            const available = probes.filter((p) => p.state === "available").map((p) => p.model);
+            const available = probes
+                .filter((p) => p.state === "available")
+                .map((p) => ({ provider: p.provider, model: p.model }));
             res.json({
                 available,
                 recommendation: available[0] || null,

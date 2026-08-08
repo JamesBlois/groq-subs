@@ -334,4 +334,37 @@ describe("Groq translator", function () {
             breaker.reset();
         }
     });
+
+    it("rotates to a reasoning model when non-reasoning models are rate-limited", async function () {
+        this.timeout(15000);
+        breaker.reset();
+        const config = getSubtitleConfig({ groqApiKey: "gsk_test", sourceLang: "en", targetLang: "vi" });
+        const attempted = [];
+        global.fetch = async (url, options) => {
+            const body = JSON.parse(options.body);
+            attempted.push(body.model);
+            // Non-reasoning Groq models are rate-limited (long cooldown).
+            if (["groq/compound-mini", "llama-3.1-8b-instant", "llama-3.3-70b-versatile"].includes(body.model)) {
+                return {
+                    ok: false,
+                    status: 429,
+                    json: async () => ({ error: { message: "Please try again in 1h2m26s" } }),
+                };
+            }
+            // A reasoning model (qwen) is available and succeeds.
+            return {
+                ok: true,
+                json: async () => ({ choices: [{ message: { content: "1. Xin chào\n2. Thế giới" } }] }),
+            };
+        };
+
+        const translated = await translateGroqBatch(["Hello", "World"], config);
+        assert.deepEqual(translated, ["Xin chào", "Thế giới"]);
+        // A reasoning model (previously filtered out) was actually attempted and succeeded.
+        const reasoningAttempted = attempted.some((m) =>
+            ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"].includes(m),
+        );
+        assert.ok(reasoningAttempted, "a reasoning model should be tried when non-reasoning are rate-limited");
+        breaker.reset();
+    });
 });
