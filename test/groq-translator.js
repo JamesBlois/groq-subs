@@ -1,6 +1,13 @@
 const assert = require("assert");
 const { getSubtitleConfig } = require("../lib/config");
-const { translateGroqBatch, testGroqApiKey, GROQ_MODELS, DEFAULT_GROQ_MODEL } = require("../lib/groq-translator");
+const {
+    translateGroqBatch,
+    testGroqApiKey,
+    GROQ_MODELS,
+    DEFAULT_GROQ_MODEL,
+    breaker,
+    parseRetryAfterMs,
+} = require("../lib/groq-translator");
 const { translateCues } = require("../lib/translator");
 
 describe("Groq translator", function () {
@@ -12,6 +19,7 @@ describe("Groq translator", function () {
         // Start each test with a clean Groq env so tests are isolated from real keys.
         delete process.env.GROQ_API_KEY;
         delete process.env.GROQ_MODEL;
+        breaker.reset();
     });
 
     afterEach(function () {
@@ -201,5 +209,89 @@ describe("Groq translator", function () {
         assert.equal(complete, false);
         // Failed cues are not cached in progress (so a retry re-translates them).
         assert.deepEqual(progress, [undefined, undefined]);
+    });
+
+    it("parses Groq retry-after durations into milliseconds", function () {
+        assert.equal(parseRetryAfterMs("Please try again in 23.8s"), 23800);
+        assert.equal(parseRetryAfterMs("Please try again in 13m32.16s"), 13 * 60_000 + 32160);
+        assert.equal(parseRetryAfterMs("Please try again in 1h2m26.304s"), 3600_000 + 2 * 60_000 + 26304);
+        assert.equal(parseRetryAfterMs("no retry info"), null);
+    });
+
+    it("circuit breaker skips rate-limited models and retries a healthy one", async function () {
+        this.timeout(15000);
+        breaker.reset();
+        const config = getSubtitleConfig({ groqApiKey: "gsk_test", sourceLang: "en", targetLang: "vi" });
+        const called = [];
+        global.fetch = async (url, options) => {
+            const body = JSON.parse(options.body);
+            called.push(body.model);
+            if (body.model === "llama-3.3-70b-versatile") {
+                return {
+                    ok: false,
+                    status: 429,
+                    async json() {
+                        return { error: { message: "Rate limit reached. Please try again in 1h2m26s" } };
+                    },
+                };
+            }
+            return {
+                ok: true,
+                async json() {
+                    return { choices: [{ message: { content: "1. Xin chào\n2. Thế giới" } }] };
+                },
+            };
+        };
+
+        const translated = await translateGroqBatch(["Hello", "World"], config);
+        assert.deepEqual(translated, ["Xin chào", "Thế giới"]);
+        // The rate-limited default was called, then a healthy model took over.
+        assert.ok(called.includes("llama-3.3-70b-versatile"));
+        assert.ok(called.some((m) => m !== "llama-3.3-70b-versatile"));
+        // The default model's circuit is now open (skipped on subsequent chunks).
+        assert.equal(breaker.isOpen("llama-3.3-70b-versatile"), true);
+        breaker.reset();
+    });
+
+    it("retries the same model once after a short 429 backoff before moving on", async function () {
+        this.timeout(15000);
+        breaker.reset();
+        const config = getSubtitleConfig({ groqApiKey: "gsk_test", sourceLang: "en", targetLang: "vi" });
+        let callsToDefault = 0;
+        global.fetch = async (url, options) => {
+            const body = JSON.parse(options.body);
+            if (body.model === "llama-3.3-70b-versatile") {
+                callsToDefault += 1;
+                // First call: short per-minute 429. Second call (the retry): success.
+                if (callsToDefault === 1) {
+                    return {
+                        ok: false,
+                        status: 429,
+                        async json() {
+                            return { error: { message: "Please try again in 2s" } };
+                        },
+                    };
+                }
+                return {
+                    ok: true,
+                    async json() {
+                        return { choices: [{ message: { content: "1. Xin chào\n2. Thế giới" } }] };
+                    },
+                };
+            }
+            return {
+                ok: true,
+                async json() {
+                    return { choices: [{ message: { content: "1. Xin chào\n2. Thế giới" } }] };
+                },
+            };
+        };
+
+        const translated = await translateGroqBatch(["Hello", "World"], config);
+        assert.deepEqual(translated, ["Xin chào", "Thế giới"]);
+        // The default model was called twice (initial 429 + backoff retry) and succeeded.
+        assert.equal(callsToDefault, 2);
+        assert.equal(breaker.isOpen("llama-3.3-70b-versatile"), false);
+        breaker.reset();
     });
 });
