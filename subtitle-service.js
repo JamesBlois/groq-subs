@@ -31,6 +31,18 @@ const jobs = new LRUCache({
     updateAgeOnGet: true,
 });
 
+// Background completion: after serving a partial VTT, keep translating in the
+// background with long delays (matching circuit-breaker cooldown) so the next
+// time the user opens the subtitle, a complete cached version is ready.
+// Read at call time so tests can override via env after the module is loaded.
+function bgRetryPasses() {
+    return Number(process.env.BG_RETRY_PASSES || 10);
+}
+function bgRetryDelayMs() {
+    return Number(process.env.BG_RETRY_DELAY_MS || 60_000);
+}
+const bgDelay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function getSubtitleOptions(args) {
     const config = getSubtitleConfig(args.config || (args.extra && args.extra.__config));
     logger.info("subtitle options requested", {
@@ -333,16 +345,21 @@ function createSubtitleOption(args, subtitle, config) {
 async function buildTranslatedVtt(job) {
     const config = getSubtitleConfig(job.config);
     const startedAt = process.hrtime.bigint();
-    logger.info("source subtitle download started", {
-        key: job.key,
-        subtitleUrl: job.subtitleUrl,
-    });
-    const subtitleText = await fetchText(job.subtitleUrl);
 
-    const cues = parseSubtitleCues(subtitleText);
-
-    if (!cues.length) {
-        throw new Error(`No subtitle cues found for ${job.title}`);
+    // Reuse parsed cues from a previous attempt (stored on the job) to avoid
+    // re-downloading + re-parsing the subtitle file on every resume.
+    let cues = job.cues;
+    if (!cues || !cues.length) {
+        logger.info("source subtitle download started", {
+            key: job.key,
+            subtitleUrl: job.subtitleUrl,
+        });
+        const subtitleText = await fetchText(job.subtitleUrl);
+        cues = parseSubtitleCues(subtitleText);
+        if (!cues.length) {
+            throw new Error(`No subtitle cues found for ${job.title}`);
+        }
+        job.cues = cues;
     }
 
     // Reuse partial progress from a previous (interrupted) attempt so we resume instead of
@@ -365,29 +382,30 @@ async function buildTranslatedVtt(job) {
         const { translations, complete } = await translateCues(cues, config, job.progress);
 
         if (!complete) {
-            // Some cues could not be translated (all Groq models were rate-limited for their
-            // chunk). Never serve the untranslated (source-language) text: show a Vietnamese
-            // notice instead. Progress for the translated cues is already saved on the job, so
-            // the next request resumes and only re-translates the missing cues.
             const resumedCount = job.progress.filter((v) => v !== undefined).length;
-            const vtt = composeDiagnosticVtt({
-                title: "Groq Subs chưa dịch xong",
-                message: `Đã dịch ${resumedCount}/${cues.length} dòng. Các model Groq đang bị giới hạn tốc độ. Vui lòng thử lại sau ít phút (tiến độ đã được lưu, sẽ nối tiếp).`,
-            });
+            // Serve the partial VTT directly: translated cues where available, source text
+            // as fallback for the rest. Do NOT prepend a long-running diagnostic cue — it
+            // would overlay the movie for 10 minutes and make the subtitle appear "stopped".
+            // Stremio loads the VTT once, so the file must stay usable as-is.
+            const partialVtt = composeVtt(cues, translations);
             recordSubtitleTranslation({
-                bytes: Buffer.byteLength(vtt, "utf8"),
+                bytes: Buffer.byteLength(partialVtt, "utf8"),
                 durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
                 sourceLanguage: config.sourceLanguage,
                 status: "partial",
                 targetLanguage: config.targetLanguage,
             });
-            logger.warn("subtitle translation incomplete, serving notice", {
+            logger.warn("subtitle translation incomplete, serving partial VTT (source fallback for gaps)", {
                 complete: false,
                 cueCount: cues.length,
                 key: job.key,
                 resumedCues: resumedCount,
             });
-            return { vtt, complete: false };
+            // Kick off background completion: keep translating the missing cues with
+            // long-delay retries until the file is complete, then cache the final VTT so
+            // the next request gets a finished subtitle.
+            startBackgroundCompletion(job.key);
+            return { vtt: partialVtt, complete: false };
         }
 
         const vtt = composeVtt(cues, translations);
@@ -416,6 +434,96 @@ async function buildTranslatedVtt(job) {
     }
 }
 
+// Background completion loop: after a partial VTT is served, keep retrying the
+// missing cues with long delays (matching circuit-breaker cooldown) until the
+// entire file is translated. When done, cache the final VTT and remove the job
+// so the next request gets a complete, cached subtitle.
+function startBackgroundCompletion(key) {
+    const job = jobs.get(key);
+    if (!job || job.completing) return;
+    job.completing = true;
+
+    logger.info("background completion started", { key });
+
+    (async () => {
+        try {
+            for (let pass = 1; pass <= bgRetryPasses(); pass += 1) {
+                const current = jobs.get(key);
+                if (!current) {
+                    logger.info("background completion stopped: job removed", { key, pass });
+                    return;
+                }
+
+                // Check if already complete (e.g. another request finished it).
+                const done =
+                    Array.isArray(current.progress) && current.progress.every((v) => v !== undefined && v !== "");
+                if (done) {
+                    await cacheFinalVtt(key);
+                    return;
+                }
+
+                logger.info("background completion retry pass", { key, pass, missing: countMissing(current) });
+
+                if (pass > 1) {
+                    await bgDelay(bgRetryDelayMs());
+                }
+
+                const config = getSubtitleConfig(current.config);
+                const cues = current.cues;
+                if (!cues || !cues.length) {
+                    logger.warn("background completion: cues missing from job", { key });
+                    return;
+                }
+
+                try {
+                    const { complete } = await translateCues(cues, config, current.progress);
+                    if (complete) {
+                        await cacheFinalVtt(key);
+                        logger.info("background completion finished", { key, pass });
+                        return;
+                    }
+                } catch (err) {
+                    logger.warn("background completion pass failed", { key, pass, error: err.message });
+                }
+            }
+            logger.warn("background completion exhausted all passes", { key });
+        } finally {
+            const current = jobs.get(key);
+            if (current) current.completing = false;
+        }
+    })().catch((err) => {
+        logger.error("background completion error", { key, error: err.message });
+        const current = jobs.get(key);
+        if (current) current.completing = false;
+    });
+}
+
+async function cacheFinalVtt(key) {
+    const job = jobs.get(key);
+    if (!job || !job.cues) return;
+
+    const translations = job.progress.map((v) => (v === undefined ? "" : v));
+    const vtt = composeVtt(job.cues, translations);
+
+    await setCachedGeneratedSubtitle(key, vtt);
+    if (jobs.get(key) === job) {
+        jobs.delete(key);
+    }
+    logger.info("background completion cached final VTT", {
+        bytes: Buffer.byteLength(vtt, "utf8"),
+        key,
+    });
+}
+
+function countMissing(job) {
+    if (!Array.isArray(job.progress)) return 0;
+    return job.progress.filter((v) => v === undefined || v === "").length;
+}
+
+function clearJobs() {
+    jobs.clear();
+}
+
 function hashKey(value) {
     return crypto.createHash("sha1").update(JSON.stringify(value)).digest("hex").slice(0, 24);
 }
@@ -433,6 +541,7 @@ function getJobsStatus() {
             translatedCues: done,
             complete: total > 0 && done === total,
             inFlight: Boolean(job.promise),
+            backgroundCompleting: Boolean(job.completing),
             config: {
                 sourceLang: job.config?.sourceLang,
                 targetLang: job.config?.targetLang,
@@ -444,6 +553,7 @@ function getJobsStatus() {
 }
 
 module.exports = {
+    clearJobs,
     getGeneratedSubtitleResponse,
     getJobsStatus,
     getSubtitleOptions,

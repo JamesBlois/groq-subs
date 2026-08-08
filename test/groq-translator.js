@@ -189,6 +189,8 @@ describe("Groq translator", function () {
 
     it("marks the result incomplete when a batch fails and keeps progress for resume", async function () {
         this.timeout(15000);
+        process.env.TRANSLATE_RETRY_DELAY_MS = "0";
+        process.env.TRANSLATE_RETRY_PASSES = "1";
         const config = getSubtitleConfig({ groqApiKey: "gsk_test", sourceLang: "en", targetLang: "vi" });
         const cues = [
             { text: "Hello", start: 0, end: 1 },
@@ -208,6 +210,8 @@ describe("Groq translator", function () {
         assert.equal(complete, false);
         // Failed cues are not cached in progress (so a retry re-translates them).
         assert.deepEqual(progress, [undefined, undefined]);
+        delete process.env.TRANSLATE_RETRY_DELAY_MS;
+        delete process.env.TRANSLATE_RETRY_PASSES;
     });
 
     it("parses Groq retry-after durations into milliseconds", function () {
@@ -366,5 +370,62 @@ describe("Groq translator", function () {
         );
         assert.ok(reasoningAttempted, "a reasoning model should be tried when non-reasoning are rate-limited");
         breaker.reset();
+    });
+
+    it("retries missing cues with another available model after a batch fails", async function () {
+        this.timeout(15000);
+        breaker.reset();
+        process.env.TRANSLATE_RETRY_DELAY_MS = "0";
+        process.env.TRANSLATE_RETRY_PASSES = "3";
+        const config = getSubtitleConfig({ groqApiKey: "gsk_test", sourceLang: "en", targetLang: "vi" });
+        const cues = [
+            { text: "Hello", start: 0, end: 1 },
+            { text: "World", start: 1, end: 2 },
+        ];
+        // First attempt: primary model returns a line-count mismatch so the batch fails.
+        // Retry pass: primary model now succeeds (simulating quota becoming available).
+        let attemptsOnDefault = 0;
+        global.fetch = async (url, options) => {
+            const body = JSON.parse(options.body);
+            if (body.model === "llama-3.3-70b-versatile") {
+                attemptsOnDefault += 1;
+                if (attemptsOnDefault === 1) {
+                    return {
+                        ok: true,
+                        async json() {
+                            // Wrong line count -> mismatch -> batch fails.
+                            return { choices: [{ message: { content: "1. Xin chào" } }] };
+                        },
+                    };
+                }
+            }
+            // Any model on retry: return the correct line count.
+            return {
+                ok: true,
+                async json() {
+                    return { choices: [{ message: { content: "1. Xin chào\n2. Thế giới" } }] };
+                },
+            };
+        };
+
+        const { translations, complete } = await translateCues(cues, config, new Array(2).fill(undefined));
+
+        assert.equal(complete, true);
+        assert.deepEqual(translations, ["Xin chào", "Thế giới"]);
+        delete process.env.TRANSLATE_RETRY_DELAY_MS;
+        delete process.env.TRANSLATE_RETRY_PASSES;
+        breaker.reset();
+    });
+
+    it("verifyIntegrity counts cues whose translation is missing or empty", function () {
+        const { verifyIntegrity } = require("../lib/translator");
+        const cues = [
+            { text: "Hello", start: 0, end: 1 },
+            { text: "World", start: 1, end: 2 },
+            { text: "", start: 2, end: 3 },
+        ];
+        assert.equal(verifyIntegrity(cues, ["Xin chào", "Thế giới", ""]), 0);
+        assert.equal(verifyIntegrity(cues, ["Xin chào", "", ""]), 1);
+        assert.equal(verifyIntegrity(cues, ["", "", ""]), 2);
     });
 });
