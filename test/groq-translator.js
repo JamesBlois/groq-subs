@@ -158,6 +158,25 @@ describe("Groq translator", function () {
         assert.equal(result.status, 401);
     });
 
+    it("treats a 429 (rate-limited model) as a VALID key, not a bad key", async function () {
+        // The chosen model is rate-limited, but the key itself is fine — and the addon still
+        // works via fallback. Reporting this as "key invalid" (old behaviour) made users think
+        // their key was broken just because they picked a rate-limited model.
+        global.fetch = async () => ({
+            ok: false,
+            status: 429,
+            async json() {
+                return { error: { message: "Rate limit reached. Please try again in 30s" } };
+            },
+        });
+
+        const result = await testGroqApiKey({ groqApiKey: "good", groqModel: "llama-3.1-8b-instant" });
+        assert.equal(result.ok, true, "a 429 must NOT fail the key test");
+        assert.equal(result.status, 429);
+        assert.equal(result.rateLimited, true);
+        assert.equal(result.model, "llama-3.1-8b-instant");
+    });
+
     it("resumes from progress and skips already-translated cues to save tokens", async function () {
         this.timeout(15000);
         const config = getSubtitleConfig({ groqApiKey: "gsk_test", sourceLang: "en", targetLang: "vi" });

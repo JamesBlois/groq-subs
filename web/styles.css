@@ -229,6 +229,10 @@ legend {
     color: #99e2b4;
 }
 
+.test-status.warn {
+    color: #ffd27a;
+}
+
 .test-status.error {
     color: #ff8b8b;
 }

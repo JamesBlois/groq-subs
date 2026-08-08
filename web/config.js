@@ -117,8 +117,16 @@ testButton.addEventListener("click", async () => {
         const response = await fetch(url);
         const data = await response.json();
         if (data.ok) {
-            testStatus.textContent = `✓ ${data.message} (model: ${data.model})`;
-            testStatus.className = "test-status success";
+            // A 429 means the key is valid but the chosen model is rate-limited right now. The
+            // addon still works (it falls back across models), so we keep config verified but
+            // show a warning instead of pretending everything is green.
+            if (data.rateLimited) {
+                testStatus.textContent = `⚠ ${data.message}`;
+                testStatus.className = "test-status warn";
+            } else {
+                testStatus.textContent = `✓ ${data.message} (model: ${data.model})`;
+                testStatus.className = "test-status success";
+            }
             // Test succeeded: persist this config and unlock install so the installed addon
             // always uses the latest verified configuration.
             configVerified = true;
