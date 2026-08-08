@@ -66,3 +66,33 @@ then open the local web interface.
 - The public URL is **auto-detected** from the request (`x-forwarded-proto`/`x-forwarded-host`), so you usually do not need to set it. If you use a custom domain or the auto-detection does not work, set `PUBLIC_URL` (e.g. `https://groq-subs.onrender.com`).
 - Optionally set `GROQ_MODEL` to a non-default model (same list as the web dropdown).
 - Free-tier Groq rate limits apply per model; the addon round-robins across models and resumes partial translations to stay within quota.
+
+## Extra free model sources (optional)
+
+To add more free translation capacity (and avoid Groq rate limits), configure an
+OpenAI-compatible provider via env. Its models join the Groq models in the rotation
+pool, so when Groq is rate-limited the addon falls back to these models.
+
+- `LLM_BASE_URL` — chat completions endpoint (OpenAI-compatible).
+- `LLM_API_KEY` — key for that provider.
+- `LLM_MODELS` — comma-separated model IDs to use.
+
+Examples:
+
+**OpenRouter** (15+ free models, one key, no credit card — `https://openrouter.ai/keys`):
+
+```env
+LLM_BASE_URL=https://openrouter.ai/api/v1/chat/completions
+LLM_API_KEY=sk-or-...
+LLM_MODELS=openai/gpt-oss-20b:free,nvidia/nemotron-3-nano-9b-v2:free,google/gemma-4-26b-a4b-it:free
+```
+
+**NVIDIA NIM** (120+ free models incl. GLM, DeepSeek, Qwen — `https://build.nvidia.com`):
+
+```env
+LLM_BASE_URL=https://integrate.api.nvidia.com/v1/chat/completions
+LLM_API_KEY=nvapi-...
+LLM_MODELS=zhipuai/glm-5.2,deepseek-ai/deepseek-r1,qwen/qwen3-235b
+```
+
+Check availability and quota from the web UI ("Check models quota") or `GET /status`.

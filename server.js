@@ -22,7 +22,7 @@ const { createRateLimiters } = require("./lib/rate-limit");
 const { renderConfigPage } = require("./lib/web-page");
 const { getGeneratedSubtitleResponse, getJobsStatus } = require("./subtitle-service");
 const { getGeneratedSubtitleCacheStats } = require("./lib/generated-subtitle-cache");
-const { testGroqApiKey, GROQ_MODELS, DEFAULT_GROQ_MODEL, breaker } = require("./lib/groq-translator");
+const { testGroqApiKey, GROQ_MODELS, DEFAULT_GROQ_MODEL, breaker, getProviders } = require("./lib/groq-translator");
 
 const DEFAULT_CONFIGURED_ROUTER_CACHE_MAX = 100;
 const DEFAULT_CONFIGURED_ROUTER_CACHE_TTL_SECONDS = 6 * 60 * 60;
@@ -139,15 +139,21 @@ function createApp() {
         try {
             const jobStats = getJobsStatus();
             const cacheStats = getGeneratedSubtitleCacheStats();
-            const models = GROQ_MODELS.map((model) => ({
-                model,
-                circuitOpen: breaker.isOpen(model),
+            const providers = getProviders({}).map((p) => ({
+                id: p.id,
+                baseUrl: p.baseUrl,
+                apiKeyConfigured: Boolean(p.apiKey),
+                models: p.models.map((model) => ({
+                    model,
+                    circuitOpen: breaker.isOpen(`${p.id}:${model}`),
+                })),
             }));
             res.json({
                 addon: addonInterface.manifest.name,
                 groqApiKeyConfigured: Boolean(process.env.GROQ_API_KEY),
+                llmProviderConfigured: Boolean(process.env.LLM_BASE_URL && process.env.LLM_API_KEY),
                 defaultModel: process.env.GROQ_MODEL || DEFAULT_GROQ_MODEL,
-                models,
+                providers,
                 cache: cacheStats,
                 jobs: jobStats,
             });

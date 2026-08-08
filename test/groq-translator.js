@@ -51,7 +51,7 @@ describe("Groq translator", function () {
     });
 
     it("throws when the API key is missing (so the caller serves a notice, not the source text)", async function () {
-        await assert.rejects(translateGroqBatch(["Hello", "World"], {}), /Missing Groq API key/);
+        await assert.rejects(translateGroqBatch(["Hello", "World"], {}), /Missing API key/);
     });
 
     it("posts batches to Groq and parses numbered translations", async function () {
@@ -116,7 +116,7 @@ describe("Groq translator", function () {
             },
         });
 
-        await assert.rejects(translateGroqBatch(["Hello", "World"], config), /All Groq models failed/);
+        await assert.rejects(translateGroqBatch(["Hello", "World"], config), /All models failed/);
     });
 
     it("reports an invalid API key via testGroqApiKey", async function () {
@@ -248,13 +248,14 @@ describe("Groq translator", function () {
         assert.ok(called.includes("llama-3.3-70b-versatile"));
         assert.ok(called.some((m) => m !== "llama-3.3-70b-versatile"));
         // The default model's circuit is now open (skipped on subsequent chunks).
-        assert.equal(breaker.isOpen("llama-3.3-70b-versatile"), true);
+        assert.equal(breaker.isOpen("groq:llama-3.3-70b-versatile"), true);
         breaker.reset();
     });
 
     it("retries the same model once after a short 429 backoff before moving on", async function () {
         this.timeout(15000);
         breaker.reset();
+
         const config = getSubtitleConfig({ groqApiKey: "gsk_test", sourceLang: "en", targetLang: "vi" });
         let callsToDefault = 0;
         global.fetch = async (url, options) => {
@@ -290,7 +291,47 @@ describe("Groq translator", function () {
         assert.deepEqual(translated, ["Xin chào", "Thế giới"]);
         // The default model was called twice (initial 429 + backoff retry) and succeeded.
         assert.equal(callsToDefault, 2);
-        assert.equal(breaker.isOpen("llama-3.3-70b-versatile"), false);
+        assert.equal(breaker.isOpen("groq:llama-3.3-70b-versatile"), false);
         breaker.reset();
+    });
+
+    it("falls back to a generic LLM provider model when all Groq models fail", async function () {
+        this.timeout(15000);
+        breaker.reset();
+        process.env.LLM_BASE_URL = "https://example-llm.test/v1/chat/completions";
+        process.env.LLM_API_KEY = "llm-key";
+        process.env.LLM_MODELS = "zhipuai/glm-5.2";
+
+        const config = getSubtitleConfig({ groqApiKey: "gsk_test", sourceLang: "en", targetLang: "vi" });
+        const endpoints = [];
+        global.fetch = async (url) => {
+            const target = String(url);
+            endpoints.push(target);
+            // Groq always rate-limited (long cooldown), LLM provider succeeds.
+            if (target.includes("api.groq.com")) {
+                return {
+                    ok: false,
+                    status: 429,
+                    json: async () => ({ error: { message: "Please try again in 1h2m26s" } }),
+                };
+            }
+            // Generic LLM provider
+            return {
+                ok: true,
+                json: async () => ({ choices: [{ message: { content: "1. Xin chào\n2. Thế giới" } }] }),
+            };
+        };
+
+        try {
+            const translated = await translateGroqBatch(["Hello", "World"], config);
+            assert.deepEqual(translated, ["Xin chào", "Thế giới"]);
+            // The LLM provider endpoint was actually hit (fallback beyond Groq).
+            assert.ok(endpoints.some((e) => e.includes("example-llm.test")));
+        } finally {
+            delete process.env.LLM_BASE_URL;
+            delete process.env.LLM_API_KEY;
+            delete process.env.LLM_MODELS;
+            breaker.reset();
+        }
     });
 });
