@@ -9,6 +9,7 @@ const {
     DEFAULT_GROQ_MODEL,
     breaker,
     parseRetryAfterMs,
+    TranslationError,
 } = require("../lib/groq-translator");
 const { translateCues } = require("../lib/translator");
 const { streamChatCompletion } = require("../lib/llm-stream");
@@ -550,7 +551,149 @@ describe("Groq translator", function () {
         if (prevTotal === undefined) delete process.env.LLM_TOTAL_TIMEOUT_MS;
         else process.env.LLM_TOTAL_TIMEOUT_MS = prevTotal;
     });
+
+    it('names the timeout and model in the abort error instead of "operation was aborted"', async function () {
+        this.timeout(15000);
+        const restore = withTimeouts({ idleMs: "300", totalMs: "5000" });
+        global.fetch = async () => ({ ok: true, status: 200, body: new NeverReadableStream() });
+
+        try {
+            await assert.rejects(
+                streamChatCompletion({
+                    endpoint: "https://example.test/v1/chat/completions",
+                    apiKey: "k",
+                    model: "glm-test",
+                    messages: [{ role: "user", content: "hi" }],
+                }),
+                /llm stream idle timeout after 300ms for glm-test/,
+            );
+        } finally {
+            restore();
+        }
+    });
+
+    it("rejects instead of returning the partial content when a stream stalls mid-answer", async function () {
+        this.timeout(15000);
+        // A truncated translation must never look like a success: it would be cached with the
+        // remaining cues missing (or misaligned) instead of falling back to another model.
+        const restore = withTimeouts({ idleMs: "300", totalMs: "5000" });
+        global.fetch = async () => ({
+            ok: true,
+            status: 200,
+            body: stallingStream(`data: ${JSON.stringify({ choices: [{ delta: { content: "1. Xin" } }] })}\n\n`),
+        });
+
+        try {
+            await assert.rejects(
+                streamChatCompletion({
+                    endpoint: "https://example.test/v1/chat/completions",
+                    apiKey: "k",
+                    model: "m",
+                    messages: [{ role: "user", content: "hi" }],
+                }),
+                /idle timeout/,
+            );
+        } finally {
+            restore();
+        }
+    });
+
+    it("keeps a non-JSON error body so the provider's explanation is not lost", async function () {
+        global.fetch = async () => ({
+            ok: false,
+            status: 502,
+            statusText: "Bad Gateway",
+            async text() {
+                return "<html><body>upstream connect error</body></html>";
+            },
+            async json() {
+                throw new Error("not json");
+            },
+        });
+
+        const { response, data } = await streamChatCompletion({
+            endpoint: "https://example.test/v1/chat/completions",
+            apiKey: "k",
+            model: "m",
+            messages: [{ role: "user", content: "hi" }],
+        });
+        assert.equal(response.status, 502);
+        assert.match(data.error.message, /upstream connect error/);
+    });
+
+    it("reports an invalid key as invalid_key rather than a generic failure", async function () {
+        this.timeout(15000);
+        const config = getSubtitleConfig({ groqApiKey: "bad", sourceLang: "en", targetLang: "vi" });
+        global.fetch = async () => ({
+            ok: false,
+            status: 401,
+            statusText: "Unauthorized",
+            async json() {
+                return { error: { message: "Invalid API Key" } };
+            },
+        });
+
+        await assert.rejects(translateGroqBatch(["Hello"], config), (error) => {
+            assert.ok(error instanceof TranslationError);
+            assert.equal(error.reason, "invalid_key");
+            assert.equal(error.failures.length, GROQ_MODELS.length);
+            assert.equal(error.failures[0].status, 401);
+            assert.match(error.message, /Invalid API Key/);
+            return true;
+        });
+    });
+
+    it("surfaces the failure reason to the caller of translateCues", async function () {
+        this.timeout(15000);
+        const config = getSubtitleConfig({ groqApiKey: "bad", sourceLang: "en", targetLang: "vi" });
+        global.fetch = async () => ({
+            ok: false,
+            status: 401,
+            statusText: "Unauthorized",
+            async json() {
+                return { error: { message: "Invalid API Key" } };
+            },
+        });
+
+        const { complete, failure } = await translateCues([{ text: "Hello", start: 0, end: 1 }], config, null);
+        assert.equal(complete, false);
+        assert.equal(failure.reason, "invalid_key");
+    });
 });
+
+function withTimeouts({ idleMs, totalMs }) {
+    const prevIdle = process.env.LLM_IDLE_TIMEOUT_MS;
+    const prevTotal = process.env.LLM_TOTAL_TIMEOUT_MS;
+    process.env.LLM_IDLE_TIMEOUT_MS = idleMs;
+    process.env.LLM_TOTAL_TIMEOUT_MS = totalMs;
+    return () => {
+        if (prevIdle === undefined) delete process.env.LLM_IDLE_TIMEOUT_MS;
+        else process.env.LLM_IDLE_TIMEOUT_MS = prevIdle;
+        if (prevTotal === undefined) delete process.env.LLM_TOTAL_TIMEOUT_MS;
+        else process.env.LLM_TOTAL_TIMEOUT_MS = prevTotal;
+    };
+}
+
+// Emits one chunk and then goes silent forever (provider died mid-answer).
+function stallingStream(text) {
+    const encoder = new TextEncoder();
+    let sent = false;
+    return {
+        getReader() {
+            return {
+                read() {
+                    if (sent) return new Promise(() => {});
+                    sent = true;
+                    return Promise.resolve({ value: encoder.encode(text), done: false });
+                },
+                cancel() {
+                    return Promise.resolve();
+                },
+                releaseLock() {},
+            };
+        },
+    };
+}
 
 function toReadableStream(text) {
     const encoder = new TextEncoder();
