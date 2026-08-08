@@ -15,6 +15,7 @@ module.exports = [
                 document: "readonly",
                 fetch: "readonly",
                 global: "readonly",
+                localStorage: "readonly",
                 location: "readonly",
                 module: "readonly",
                 navigator: "readonly",

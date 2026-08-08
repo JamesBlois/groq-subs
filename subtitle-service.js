@@ -363,12 +363,39 @@ async function buildTranslatedVtt(job) {
     });
     try {
         const { translations, complete } = await translateCues(cues, config, job.progress);
+
+        if (!complete) {
+            // Some cues could not be translated (all Groq models were rate-limited for their
+            // chunk). Never serve the untranslated (source-language) text: show a Vietnamese
+            // notice instead. Progress for the translated cues is already saved on the job, so
+            // the next request resumes and only re-translates the missing cues.
+            const resumedCount = job.progress.filter((v) => v !== undefined).length;
+            const vtt = composeDiagnosticVtt({
+                title: "Groq Subs chưa dịch xong",
+                message: `Đã dịch ${resumedCount}/${cues.length} dòng. Các model Groq đang bị giới hạn tốc độ. Vui lòng thử lại sau ít phút (tiến độ đã được lưu, sẽ nối tiếp).`,
+            });
+            recordSubtitleTranslation({
+                bytes: Buffer.byteLength(vtt, "utf8"),
+                durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
+                sourceLanguage: config.sourceLanguage,
+                status: "partial",
+                targetLanguage: config.targetLanguage,
+            });
+            logger.warn("subtitle translation incomplete, serving notice", {
+                complete: false,
+                cueCount: cues.length,
+                key: job.key,
+                resumedCues: resumedCount,
+            });
+            return { vtt, complete: false };
+        }
+
         const vtt = composeVtt(cues, translations);
         recordSubtitleTranslation({
             bytes: Buffer.byteLength(vtt, "utf8"),
             durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
             sourceLanguage: config.sourceLanguage,
-            status: complete ? "success" : "partial",
+            status: "success",
             targetLanguage: config.targetLanguage,
         });
         logger.info("subtitle translation finished", {

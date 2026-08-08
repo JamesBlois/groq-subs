@@ -8,6 +8,43 @@ const openStremioWebButton = document.getElementById("openStremioWeb");
 const copyStatus = document.getElementById("copyStatus");
 const testButton = document.getElementById("testApiKey");
 const testStatus = document.getElementById("testStatus");
+const installButton = form.querySelector('button[type="submit"]');
+
+const STORAGE_KEY = "groq-subs-config";
+// Whether the current field values have been verified by a successful Test API key call.
+// Install / copy / Stremio Web are only allowed once this is true, so the installed addon
+// always uses a config whose API key is known to work.
+let configVerified = false;
+
+function currentConfig() {
+    return {
+        source: source.value,
+        target: target.value,
+        model: groqModel.value,
+        apiKey: groqApiKey.value.trim(),
+    };
+}
+
+function saveConfig() {
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(currentConfig()));
+    } catch {
+        // localStorage may be unavailable (private mode); saving is best-effort.
+    }
+}
+
+function restoreConfig() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+        if (!saved) return;
+        if (saved.source) source.value = saved.source;
+        if (saved.target) target.value = saved.target;
+        if (saved.model) groqModel.value = saved.model;
+        if (saved.apiKey) groqApiKey.value = saved.apiKey;
+    } catch {
+        // ignore malformed storage
+    }
+}
 
 function manifestUrl() {
     const baseUrl = `${location.origin}/configure/${encodeURIComponent(source.value)}/${encodeURIComponent(target.value)}`;
@@ -20,20 +57,33 @@ function stremioWebUrl() {
     return `https://web.stremio.com/#/addons?addon=${encodeURIComponent(manifestUrl())}`;
 }
 
+function updateInstallState() {
+    // Block install/copy/web until the config has been verified with Test API key.
+    const blocked = !configVerified;
+    installButton.disabled = blocked;
+    copyButton.disabled = blocked;
+    openStremioWebButton.disabled = blocked;
+    if (blocked) {
+        installButton.textContent = "Bấm Test API key trước khi cài";
+    } else {
+        installButton.textContent = "Install configured addon";
+    }
+}
+
 function updateView() {
     copyStatus.textContent = "";
 }
 
 form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!validateConfig()) return;
-
+    if (!requireVerified()) return;
+    saveConfig();
     location.href = manifestUrl().replace(/^https?:\/\//, "stremio://");
 });
 
 copyButton.addEventListener("click", async () => {
-    if (!validateConfig()) return;
-
+    if (!requireVerified()) return;
+    saveConfig();
     try {
         await copyText(manifestUrl());
         copyStatus.textContent = "Copied";
@@ -43,8 +93,8 @@ copyButton.addEventListener("click", async () => {
 });
 
 openStremioWebButton.addEventListener("click", () => {
-    if (!validateConfig()) return;
-
+    if (!requireVerified()) return;
+    saveConfig();
     location.href = stremioWebUrl();
 });
 
@@ -67,35 +117,55 @@ testButton.addEventListener("click", async () => {
         if (data.ok) {
             testStatus.textContent = `✓ ${data.message} (model: ${data.model})`;
             testStatus.className = "test-status success";
+            // Test succeeded: persist this config and unlock install so the installed addon
+            // always uses the latest verified configuration.
+            configVerified = true;
+            saveConfig();
+            updateInstallState();
         } else {
             testStatus.textContent = `✗ ${data.message || "API key không hợp lệ"}`;
             testStatus.className = "test-status error";
+            configVerified = false;
+            updateInstallState();
         }
     } catch (err) {
         testStatus.textContent = `✗ Lỗi kết nối: ${err.message}`;
         testStatus.className = "test-status error";
+        configVerified = false;
+        updateInstallState();
     } finally {
         testButton.disabled = false;
     }
 });
 
-source.addEventListener("change", updateView);
-target.addEventListener("change", updateView);
-groqModel.addEventListener("change", updateView);
-groqApiKey.addEventListener("input", updateView);
+function requireVerified() {
+    if (!configVerified) {
+        copyStatus.textContent = "Vui lòng bấm Test API key thành công trước khi cài đặt";
+        copyStatus.className = "copy-status error";
+        return false;
+    }
+    return true;
+}
+
+// Any field change invalidates the previous verification (the saved config may no longer match).
+function markDirty() {
+    configVerified = false;
+    updateInstallState();
+    testStatus.textContent = "";
+    testStatus.className = "test-status";
+}
+
+source.addEventListener("change", markDirty);
+target.addEventListener("change", markDirty);
+groqModel.addEventListener("change", markDirty);
+groqApiKey.addEventListener("input", markDirty);
+
+restoreConfig();
 updateView();
+updateInstallState();
 
 function encodeProviderKey(value) {
     return btoa(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
-function validateConfig() {
-    if (source.value === target.value) {
-        copyStatus.textContent = "Chọn ngôn ngữ nguồn và đích khác nhau";
-        return false;
-    }
-
-    return true;
 }
 
 async function copyText(value) {

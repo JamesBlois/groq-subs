@@ -50,9 +50,8 @@ describe("Groq translator", function () {
         assert.equal(DEFAULT_GROQ_MODEL, "llama-3.3-70b-versatile");
     });
 
-    it("returns the source lines when the API key is missing", async function () {
-        const translated = await translateGroqBatch(["Hello", "World"], {});
-        assert.deepEqual(translated, ["Hello", "World"]);
+    it("throws when the API key is missing (so the caller serves a notice, not the source text)", async function () {
+        await assert.rejects(translateGroqBatch(["Hello", "World"], {}), /Missing Groq API key/);
     });
 
     it("posts batches to Groq and parses numbered translations", async function () {
