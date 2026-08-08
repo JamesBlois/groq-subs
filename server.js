@@ -11,7 +11,13 @@ const { createAddonInterface } = require("./addon");
 const { composeDiagnosticVtt, parseDiagnosticSubtitlePayload } = require("./lib/diagnostic-subtitle");
 const logger = require("./lib/logger");
 const { contentType, recordHttpRequest, renderMetrics } = require("./lib/metrics");
-const { getDisplayBaseUrl, getListenHost, getTrustProxySetting } = require("./lib/public-url");
+const {
+    getDisplayBaseUrl,
+    getListenHost,
+    getTrustProxySetting,
+    baseUrlFromRequest,
+    withRequestBaseUrl,
+} = require("./lib/public-url");
 const { createRateLimiters } = require("./lib/rate-limit");
 const { renderConfigPage } = require("./lib/web-page");
 const { getGeneratedSubtitleResponse } = require("./subtitle-service");
@@ -36,6 +42,17 @@ function createApp() {
     });
 
     const rateLimiters = createRateLimiters();
+
+    // Bind the request's public base URL into the async context so subtitle URLs
+    // are generated with the correct host (auto-detected from x-forwarded-* headers)
+    // even when no PUBLIC_URL env var is set.
+    app.use((req, res, next) => {
+        const detected = baseUrlFromRequest(req);
+        if (detected) {
+            return withRequestBaseUrl(detected, next);
+        }
+        next();
+    });
 
     app.use(logRequest);
     app.use((req, res, next) => {

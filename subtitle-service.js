@@ -135,7 +135,7 @@ async function getSubtitleOptions(args) {
             createDiagnosticSubtitleOption({
                 code: "lookup-failed",
                 config,
-                title: "Double Subtitles lookup failed",
+                title: "Groq Subs lookup failed",
                 message: "Could not look up source subtitles for this video.",
             }),
         ];
@@ -240,7 +240,7 @@ function createSubtitleOptions(args, results, sourceLanguageSubtitles, config) {
             createDiagnosticSubtitleOption({
                 code: "no-upstream-subtitles",
                 config,
-                title: "Double Subtitles notice",
+                title: "Groq Subs notice",
                 message: "OpenSubtitles did not return any subtitles for this video.",
             }),
         ];
@@ -251,7 +251,7 @@ function createSubtitleOptions(args, results, sourceLanguageSubtitles, config) {
             createDiagnosticSubtitleOption({
                 code: "no-source-language-subtitles",
                 config,
-                title: "Double Subtitles notice",
+                title: "Groq Subs notice",
                 message: `No ${config.sourceLanguage} subtitles were found for this video.`,
             }),
         ];
@@ -273,7 +273,7 @@ function generatedSubtitleResponse(vtt, cacheControl = GENERATED_SUBTITLE_CACHE_
 
 function diagnosticGeneratedSubtitleResponse({ error, key, message, source, startedAt }) {
     const vtt = composeDiagnosticVtt({
-        title: "Double Subtitles error",
+        title: "Groq Subs error",
         message,
     });
     logGeneratedSubtitleServed({

@@ -36,6 +36,14 @@ describe("live configured subtitle addon", function () {
         assert.match(portugueseManifest.description, /de subtitles with pt-BR translation via Groq/);
     });
 
+    it("default manifest has correct Groq Subs branding and no stale config", async function () {
+        const manifest = await getJson(`${baseUrl}/manifest.json`);
+        assert.equal(manifest.id, "community.groqsubs");
+        assert.equal(manifest.name, "Groq Subs");
+        assert.ok(!manifest.stremioAddonsConfig, "stale signature must be removed");
+        assert.ok(!String(manifest.logo).includes("awerks"), "logo must point to our repo");
+    });
+
     it("rate limits repeated requests", async function () {
         const previousMax = process.env.RATE_LIMIT_MAX;
         const previousWindowMs = process.env.RATE_LIMIT_WINDOW_MS;

@@ -59,3 +59,10 @@ docker run -p 53100:53100 -e GROQ_API_KEY=... ghcr.io/awerks/stremio-double-subt
 ```
 
 then open the local web interface.
+
+## Deploy (Render / Vercel / Railway)
+
+- Set `GROQ_API_KEY` to your Groq API key.
+- The public URL is **auto-detected** from the request (`x-forwarded-proto`/`x-forwarded-host`), so you usually do not need to set it. If you use a custom domain or the auto-detection does not work, set `PUBLIC_URL` (e.g. `https://groq-subs.onrender.com`).
+- Optionally set `GROQ_MODEL` to a non-default model (same list as the web dropdown).
+- Free-tier Groq rate limits apply per model; the addon round-robins across models and resumes partial translations to stay within quota.
