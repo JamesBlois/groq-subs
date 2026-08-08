@@ -8,6 +8,8 @@ const openStremioWebButton = document.getElementById("openStremioWeb");
 const copyStatus = document.getElementById("copyStatus");
 const testButton = document.getElementById("testApiKey");
 const testStatus = document.getElementById("testStatus");
+const checkModelsButton = document.getElementById("checkModels");
+const modelsStatusDiv = document.getElementById("modelsStatus");
 const installButton = form.querySelector('button[type="submit"]');
 
 const STORAGE_KEY = "groq-subs-config";
@@ -146,6 +148,54 @@ function requireVerified() {
     }
     return true;
 }
+
+checkModelsButton.addEventListener("click", async () => {
+    const key = groqApiKey.value.trim();
+    if (!key) {
+        testStatus.textContent = "Vui lòng nhập Groq API key";
+        testStatus.className = "test-status error";
+        return;
+    }
+
+    checkModelsButton.disabled = true;
+    modelsStatusDiv.classList.remove("hidden");
+    modelsStatusDiv.innerHTML = '<span class="test-status">Đang kiểm tra từng model...</span>';
+
+    try {
+        const url = `${location.origin}/models-status?apiKey=${encodeProviderKey(key)}`;
+        const response = await fetch(url);
+        const data = await response.json();
+        if (!data.models) {
+            modelsStatusDiv.innerHTML = `<span class="test-status error">✗ ${data.error || "Lỗi"}</span>`;
+            return;
+        }
+
+        const rows = data.models
+            .map((m) => {
+                const labels = {
+                    available: { text: "✓ Khả dụng", cls: "model-ok" },
+                    rate_limited: { text: "⏳ Giới hạn tốc độ", cls: "model-warn" },
+                    blocked: { text: "⛔ Bị chặn", cls: "model-bad" },
+                    invalid_key: { text: "✗ Key sai", cls: "model-bad" },
+                    unknown: { text: "? Không rõ", cls: "model-warn" },
+                };
+                const lbl = labels[m.state] || labels.unknown;
+                const cooldown = m.circuitOpen ? ' <span class="model-cooldown">(cooldown)</span>' : "";
+                return `<div class="model-row ${lbl.cls}"><span class="model-name">${m.model}</span><span class="model-state">${lbl.text}${cooldown}</span></div>`;
+            })
+            .join("");
+
+        const rec = data.recommendation
+            ? `<div class="model-recommend">Khuyên dùng: <strong>${data.recommendation}</strong> (còn quota)</div>`
+            : `<div class="model-recommend model-bad">Tất cả model đều bị giới hạn — thử lại sau vài phút.</div>`;
+
+        modelsStatusDiv.innerHTML = rec + rows;
+    } catch (err) {
+        modelsStatusDiv.innerHTML = `<span class="test-status error">✗ Lỗi kết nối: ${err.message}</span>`;
+    } finally {
+        checkModelsButton.disabled = false;
+    }
+});
 
 // Any field change invalidates the previous verification (the saved config may no longer match).
 function markDirty() {

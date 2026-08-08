@@ -119,8 +119,10 @@
                         </label>
                         <div class="test-api-row">
                             <button id="testApiKey" class="test-button" type="button">Test API key</button>
+                            <button id="checkModels" class="test-button" type="button">Check models quota</button>
                             <span id="testStatus" class="test-status" role="status" aria-live="polite"></span>
                         </div>
+                        <div id="modelsStatus" class="models-status hidden"></div>
                         <button type="submit">Install configured addon</button>
                     </form>
                     <p class="install-note">
@@ -134,6 +136,9 @@
                             </button>
                             <button id="copyManifest" class="copy-button" type="button">Copy Manifest URL</button>
                         </div>
+                        <a class="status-link" href="/status" target="_blank" rel="noreferrer"
+                            >Xem trạng thái dịch / model quota →</a
+                        >
                         <span id="copyStatus" class="copy-status" role="status" aria-live="polite"></span>
                     </div>
                 </section>

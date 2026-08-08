@@ -20,8 +20,9 @@ const {
 } = require("./lib/public-url");
 const { createRateLimiters } = require("./lib/rate-limit");
 const { renderConfigPage } = require("./lib/web-page");
-const { getGeneratedSubtitleResponse } = require("./subtitle-service");
-const { testGroqApiKey } = require("./lib/groq-translator");
+const { getGeneratedSubtitleResponse, getJobsStatus } = require("./subtitle-service");
+const { getGeneratedSubtitleCacheStats } = require("./lib/generated-subtitle-cache");
+const { testGroqApiKey, GROQ_MODELS, DEFAULT_GROQ_MODEL, breaker } = require("./lib/groq-translator");
 
 const DEFAULT_CONFIGURED_ROUTER_CACHE_MAX = 100;
 const DEFAULT_CONFIGURED_ROUTER_CACHE_TTL_SECONDS = 6 * 60 * 60;
@@ -88,6 +89,68 @@ function createApp() {
                 groqModel: req.query.model,
             });
             res.status(result.ok ? 200 : result.status || 400).json(result);
+        } catch (error) {
+            next(error);
+        }
+    });
+
+    app.get("/models-status", async (req, res, next) => {
+        try {
+            const apiKey = req.query.apiKey
+                ? Buffer.from(String(req.query.apiKey).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")
+                : process.env.GROQ_API_KEY;
+
+            if (!apiKey) {
+                res.status(401).json({ error: "Missing Groq API key" });
+                return;
+            }
+
+            // Probe each model in parallel with a tiny request. Each returns ok/limited/blocked.
+            const probes = await Promise.all(
+                GROQ_MODELS.map(async (model) => {
+                    const result = await testGroqApiKey({ groqApiKey: apiKey, groqModel: model });
+                    let state = "unknown";
+                    if (result.ok) state = "available";
+                    else if (result.status === 429) state = "rate_limited";
+                    else if (result.status === 403) state = "blocked";
+                    else if (result.status === 401) state = "invalid_key";
+                    return {
+                        model,
+                        state,
+                        circuitOpen: breaker.isOpen(model),
+                        message: result.message,
+                        status: result.status,
+                    };
+                }),
+            );
+
+            const available = probes.filter((p) => p.state === "available").map((p) => p.model);
+            res.json({
+                available,
+                recommendation: available[0] || null,
+                models: probes,
+            });
+        } catch (error) {
+            next(error);
+        }
+    });
+
+    app.get("/status", async (req, res, next) => {
+        try {
+            const jobStats = getJobsStatus();
+            const cacheStats = getGeneratedSubtitleCacheStats();
+            const models = GROQ_MODELS.map((model) => ({
+                model,
+                circuitOpen: breaker.isOpen(model),
+            }));
+            res.json({
+                addon: addonInterface.manifest.name,
+                groqApiKeyConfigured: Boolean(process.env.GROQ_API_KEY),
+                defaultModel: process.env.GROQ_MODEL || DEFAULT_GROQ_MODEL,
+                models,
+                cache: cacheStats,
+                jobs: jobStats,
+            });
         } catch (error) {
             next(error);
         }

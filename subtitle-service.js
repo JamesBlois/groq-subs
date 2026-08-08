@@ -420,7 +420,31 @@ function hashKey(value) {
     return crypto.createHash("sha1").update(JSON.stringify(value)).digest("hex").slice(0, 24);
 }
 
+function getJobsStatus() {
+    const entries = [];
+    for (const [key, job] of jobs) {
+        const total = Array.isArray(job.progress) ? job.progress.length : 0;
+        const done = Array.isArray(job.progress) ? job.progress.filter((v) => v !== undefined).length : 0;
+        entries.push({
+            key,
+            title: job.title,
+            subtitleUrl: job.subtitleUrl,
+            cueCount: total,
+            translatedCues: done,
+            complete: total > 0 && done === total,
+            inFlight: Boolean(job.promise),
+            config: {
+                sourceLang: job.config?.sourceLang,
+                targetLang: job.config?.targetLang,
+                groqModel: job.config?.groqModel,
+            },
+        });
+    }
+    return { activeJobCount: jobs.size, jobs: entries };
+}
+
 module.exports = {
     getGeneratedSubtitleResponse,
+    getJobsStatus,
     getSubtitleOptions,
 };

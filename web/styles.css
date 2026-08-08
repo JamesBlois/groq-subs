@@ -233,6 +233,68 @@ legend {
     color: #ff8b8b;
 }
 
+.models-status {
+    display: grid;
+    gap: 6px;
+    padding: 10px;
+    border: 1px solid #34394a;
+    border-radius: 8px;
+    background: #11141d;
+    font-size: 13px;
+}
+
+.models-status.hidden {
+    display: none;
+}
+
+.model-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 6px;
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.model-name {
+    color: #dfe5f6;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+}
+
+.model-state {
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.model-ok .model-state {
+    color: #99e2b4;
+}
+
+.model-warn .model-state {
+    color: #ffd27a;
+}
+
+.model-bad .model-state {
+    color: #ff8b8b;
+}
+
+.model-cooldown {
+    color: #aeb7ca;
+    font-weight: 400;
+}
+
+.model-recommend {
+    color: #c8d2ff;
+    margin-bottom: 4px;
+    font-size: 13px;
+}
+
+.model-recommend.model-bad {
+    color: #ff8b8b;
+}
+
 button {
     border: 0;
     background: #6d7dff;
@@ -278,6 +340,19 @@ button:hover {
 .manifest a {
     color: #c8d2ff;
     word-break: break-all;
+}
+
+.status-link {
+    display: inline-block;
+    margin-top: 4px;
+    color: #c8d2ff;
+    font-size: 13px;
+    font-weight: 500;
+    text-decoration: none;
+}
+
+.status-link:hover {
+    text-decoration: underline;
 }
 
 .copy-button {

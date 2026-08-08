@@ -44,6 +44,16 @@ describe("live configured subtitle addon", function () {
         assert.ok(!String(manifest.logo).includes("awerks"), "logo must point to our repo");
     });
 
+    it("serves a status dashboard with model circuit-breaker state", async function () {
+        const status = await getJson(`${baseUrl}/status`);
+        assert.equal(status.addon, "Groq Subs");
+        assert.ok(Array.isArray(status.models) && status.models.length > 0);
+        assert.equal(status.models[0].model, "groq/compound-mini");
+        assert.equal(typeof status.models[0].circuitOpen, "boolean");
+        assert.ok(status.jobs && typeof status.jobs.activeJobCount === "number");
+        assert.ok(status.cache && typeof status.cache.memoryEntryCount === "number");
+    });
+
     it("rate limits repeated requests", async function () {
         const previousMax = process.env.RATE_LIMIT_MAX;
         const previousWindowMs = process.env.RATE_LIMIT_WINDOW_MS;
