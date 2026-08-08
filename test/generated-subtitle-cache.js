@@ -9,11 +9,23 @@ const {
 } = require("../lib/generated-subtitle-cache");
 
 describe("generated subtitle cache", function () {
+    let previousConsoleWarn;
+    let previousRedisUrl;
+
     beforeEach(function () {
+        previousConsoleWarn = console.warn;
+        previousRedisUrl = process.env.REDIS_URL;
+        console.warn = () => {};
         clearGeneratedSubtitleCacheForTests();
     });
 
     afterEach(function () {
+        console.warn = previousConsoleWarn;
+        if (previousRedisUrl === undefined) {
+            delete process.env.REDIS_URL;
+        } else {
+            process.env.REDIS_URL = previousRedisUrl;
+        }
         clearGeneratedSubtitleCacheForTests();
     });
 
@@ -88,6 +100,48 @@ describe("generated subtitle cache", function () {
             options: { EX: 3 * 24 * 60 * 60 },
             value: "WEBVTT\n\nredis",
         });
+    });
+
+    it("treats a redis read failure as a cache miss", async function () {
+        setRedisClientForTests({
+            async get() {
+                throw new Error("redis unavailable");
+            },
+            async set() {},
+        });
+
+        assert.equal(await getCachedGeneratedSubtitle("abc"), null);
+    });
+
+    it("returns null when redis has no entry for the key", async function () {
+        setRedisClientForTests(createFakeRedisClient());
+
+        assert.equal(await getCachedGeneratedSubtitle("missing"), null);
+    });
+
+    it("skips redis entirely when REDIS_URL is not configured", async function () {
+        delete process.env.REDIS_URL;
+
+        await setCachedGeneratedSubtitle("abc", "WEBVTT\n\nmemory-only");
+
+        assert.deepEqual(await getCachedGeneratedSubtitle("abc"), {
+            source: "memory",
+            vtt: "WEBVTT\n\nmemory-only",
+        });
+        assert.equal(await getCachedGeneratedSubtitle("other"), null);
+    });
+
+    it("keeps serving from memory when the redis connection fails", async function () {
+        // Port 1 is never listening, so connect() rejects and the cache degrades to memory only.
+        process.env.REDIS_URL = "redis://127.0.0.1:1";
+
+        await setCachedGeneratedSubtitle("abc", "WEBVTT\n\nno-redis");
+
+        assert.deepEqual(await getCachedGeneratedSubtitle("abc"), {
+            source: "memory",
+            vtt: "WEBVTT\n\nno-redis",
+        });
+        assert.equal(await getCachedGeneratedSubtitle("other"), null);
     });
 });
 
