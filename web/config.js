@@ -177,17 +177,20 @@ checkModelsButton.addEventListener("click", async () => {
                     rate_limited: { text: "⏳ Giới hạn tốc độ", cls: "model-warn" },
                     blocked: { text: "⛔ Bị chặn", cls: "model-bad" },
                     invalid_key: { text: "✗ Key sai", cls: "model-bad" },
+                    timeout: { text: "⏱ Hết giờ", cls: "model-warn" },
+                    error: { text: "✗ Lỗi", cls: "model-bad" },
                     unknown: { text: "? Không rõ", cls: "model-warn" },
                 };
                 const lbl = labels[m.state] || labels.unknown;
                 const cooldown = m.circuitOpen ? ' <span class="model-cooldown">(cooldown)</span>' : "";
-                return `<div class="model-row ${lbl.cls}"><span class="model-name">${m.model}</span><span class="model-state">${lbl.text}${cooldown}</span></div>`;
+                return `<div class="model-row ${lbl.cls}"><span class="model-name">${m.provider}:${m.model}</span><span class="model-state">${lbl.text}${cooldown}</span></div>`;
             })
             .join("");
 
+        const cacheNote = data.cached ? '<span class="model-cooldown">(cache 30s)</span>' : "";
         const rec = data.recommendation
-            ? `<div class="model-recommend">Khuyên dùng: <strong>${data.recommendation}</strong> (còn quota)</div>`
-            : `<div class="model-recommend model-bad">Tất cả model đều bị giới hạn — thử lại sau vài phút.</div>`;
+            ? `<div class="model-recommend">Khuyên dùng: <strong>${data.recommendation.provider}:${data.recommendation.model}</strong> (còn quota) ${cacheNote}</div>`
+            : `<div class="model-recommend model-bad">Tất cả model đều bị giới hạn — thử lại sau vài phút. ${cacheNote}</div>`;
 
         modelsStatusDiv.innerHTML = rec + rows;
     } catch (err) {

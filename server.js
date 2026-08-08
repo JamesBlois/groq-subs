@@ -94,9 +94,29 @@ function createApp() {
         }
     });
 
-    // Probe one (provider, model) with a tiny request and return a state object.
+    // Short-lived cache so rapid repeated "Check models quota" clicks don't re-probe
+    // every model (probing is slow, especially for NVIDIA models).
+    let modelsStatusCache = null; // { at, payload }
+
+    // Probe one (provider, model) with a tiny request, capped at PROBE_TIMEOUT_MS so a single
+    // slow/hanging model cannot delay the whole dashboard.
+    const PROBE_TIMEOUT_MS = 8000;
     async function probeModel(provider, model) {
         const modelKey = `${provider.id}:${model}`;
+        // Skip the live probe for models already known to be in rate-limit cooldown: their
+        // state is already known and probing them just wastes a slow request.
+        if (breaker.isOpen(modelKey)) {
+            return {
+                provider: provider.id,
+                model,
+                state: "rate_limited",
+                circuitOpen: true,
+                message: "in cooldown (recently rate-limited)",
+                status: 429,
+            };
+        }
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
         try {
             const response = await fetch(provider.baseUrl, {
                 method: "POST",
@@ -113,6 +133,7 @@ function createApp() {
                     temperature: 0,
                     max_tokens: 5,
                 }),
+                signal: controller.signal,
             });
             const data = await response.json().catch(() => ({}));
             let state = "unknown";
@@ -129,19 +150,31 @@ function createApp() {
                 status: response.status,
             };
         } catch (err) {
+            const timedOut = err.name === "AbortError";
             return {
                 provider: provider.id,
                 model,
-                state: "error",
+                state: timedOut ? "timeout" : "error",
                 circuitOpen: breaker.isOpen(modelKey),
-                message: err.message,
+                message: timedOut ? `no response within ${PROBE_TIMEOUT_MS / 1000}s` : err.message,
                 status: 0,
             };
+        } finally {
+            clearTimeout(timer);
         }
     }
 
     app.get("/models-status", async (req, res, next) => {
         try {
+            // Serve a cached result if it is fresh (<= 30s) — probing 10+ models across
+            // providers is slow, and quota state does not change in seconds.
+            const MODELS_STATUS_CACHE_MS = 30_000;
+            const now = Date.now();
+            if (modelsStatusCache && now - modelsStatusCache.at < MODELS_STATUS_CACHE_MS) {
+                res.json(modelsStatusCache.payload);
+                return;
+            }
+
             // Groq key may come from the query (encoded) or env; the generic LLM provider key
             // is always taken from env (not exposed in the URL).
             const groqKey = req.query.apiKey
@@ -154,21 +187,40 @@ function createApp() {
                 return;
             }
 
-            const probes = [];
+            // Probe all models in parallel; allSettled + per-probe timeout means one slow
+            // model cannot block the rest.
+            const tasks = [];
             for (const provider of providers) {
                 if (!provider.apiKey) continue;
-                const results = await Promise.all(provider.models.map((model) => probeModel(provider, model)));
-                probes.push(...results);
+                for (const model of provider.models) {
+                    tasks.push(probeModel(provider, model));
+                }
             }
+            const settled = await Promise.allSettled(tasks);
+            const probes = settled.map((s) =>
+                s.status === "fulfilled"
+                    ? s.value
+                    : {
+                          provider: "?",
+                          model: "?",
+                          state: "error",
+                          circuitOpen: false,
+                          message: s.reason?.message,
+                          status: 0,
+                      },
+            );
 
             const available = probes
                 .filter((p) => p.state === "available")
                 .map((p) => ({ provider: p.provider, model: p.model }));
-            res.json({
+            const payload = {
                 available,
                 recommendation: available[0] || null,
                 models: probes,
-            });
+                cached: false,
+            };
+            modelsStatusCache = { at: now, payload: { ...payload, cached: true } };
+            res.json(payload);
         } catch (error) {
             next(error);
         }
