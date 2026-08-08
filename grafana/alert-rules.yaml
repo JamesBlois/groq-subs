@@ -1,0 +1,498 @@
+apiVersion: 1
+groups:
+    - orgId: 1
+      name: eval
+      folder: alerts
+      interval: 1m
+      rules:
+        - uid: cfnfli7e1o3cwc
+          title: StremioAddonDown
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: afneof28f1reoa
+              model:
+                editorMode: code
+                expr: 'up{job="stremio-double-subtitles"} '
+                instant: true
+                intervalMs: 1000
+                legendFormat: __auto
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: C
+              queryType: expression
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0
+                        type: eq
+                      operator:
+                        type: and
+                      query:
+                        params:
+                            - C
+                      reducer:
+                        params: []
+                        type: last
+                      type: query
+                datasource:
+                    type: __expr__
+                    uid: __expr__
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          noDataState: NoData
+          execErrState: Error
+          for: 2m
+          annotations:
+            summary: Prometheus cannot scrape the addon metrics endpoint
+          isPaused: false
+          notification_settings:
+            receiver: Telegram
+        - uid: ffnflmsxcxczkc
+          title: HighHTTP5xxRate
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: afneof28f1reoa
+              model:
+                editorMode: code
+                expr: |
+                    sum(rate(stremio_double_subtitles_http_requests_total{status=~"5.."}[5m]))
+                instant: true
+                intervalMs: 1000
+                legendFormat: __auto
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: C
+              queryType: expression
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0
+                        type: gt
+                      operator:
+                        type: and
+                      query:
+                        params:
+                            - C
+                      reducer:
+                        params: []
+                        type: last
+                      type: query
+                datasource:
+                    type: __expr__
+                    uid: __expr__
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          noDataState: NoData
+          execErrState: Error
+          for: 5m
+          annotations:
+            description: The addon is returning more than 0.05 5xx responses/sec for 5 minutes.
+            summary: High HTTP 5xx rate
+          isPaused: false
+          notification_settings:
+            receiver: Telegram
+        - uid: afnflr4wh6bcwd
+          title: HighHTTPLatencyP95
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: afneof28f1reoa
+              model:
+                editorMode: code
+                expr: "histogram_quantile(\n            0.95,\n            sum by (le) (\n              rate(stremio_double_subtitles_http_request_duration_seconds_bucket[5m])\n            )\n          ) "
+                instant: true
+                intervalMs: 1000
+                legendFormat: __auto
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: C
+              queryType: expression
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 5
+                        type: gt
+                      operator:
+                        type: and
+                      query:
+                        params:
+                            - C
+                      reducer:
+                        params: []
+                        type: last
+                      type: query
+                datasource:
+                    type: __expr__
+                    uid: __expr__
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          noDataState: NoData
+          execErrState: Error
+          for: 10m
+          annotations:
+            description: HTTP p95 latency is above 5 seconds for 10 minutes
+            summary: High HTTP p95 latency
+          isPaused: false
+          notification_settings:
+            receiver: Telegram
+        - uid: efnflw17m61ogd
+          title: SubtitleLookupFailures
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: afneof28f1reoa
+              model:
+                editorMode: code
+                expr: ' sum(rate(stremio_double_subtitles_subtitle_lookup_total{status="failure"}[15m])) / sum(rate(stremio_double_subtitles_subtitle_lookup_total[15m]))'
+                instant: true
+                intervalMs: 1000
+                legendFormat: __auto
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: C
+              queryType: expression
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0.2
+                        type: gt
+                      operator:
+                        type: and
+                      query:
+                        params:
+                            - C
+                      reducer:
+                        params: []
+                        type: last
+                      type: query
+                datasource:
+                    type: __expr__
+                    uid: __expr__
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          noDataState: NoData
+          execErrState: Error
+          for: 10m
+          annotations:
+            description: Subtitle lookup failures are above 0.02/sec
+            summary: Subtitle lookups are failing
+          isPaused: false
+          notification_settings:
+            receiver: Telegram
+        - uid: bfnflyvdjnu9sf
+          title: TranslationFailures
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: afneof28f1reoa
+              model:
+                editorMode: code
+                expr: "          sum(rate(stremio_double_subtitles_subtitle_translation_total{status=\"failure\"}[10m])) \n"
+                instant: true
+                intervalMs: 1000
+                legendFormat: __auto
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: C
+              queryType: expression
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0.01
+                        type: gt
+                      operator:
+                        type: and
+                      query:
+                        params:
+                            - C
+                      reducer:
+                        params: []
+                        type: last
+                      type: query
+                datasource:
+                    type: __expr__
+                    uid: __expr__
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          noDataState: NoData
+          execErrState: Error
+          for: 10m
+          annotations:
+            description: Translation failures are above 0.01/sec for 10 minutes
+            summary: Subtitle translations
+          isPaused: false
+          notification_settings:
+            receiver: Telegram
+        - uid: afnfm34y3fh8ga
+          title: TranslationP95VerySlow
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: afneof28f1reoa
+              model:
+                editorMode: code
+                expr: |4-
+                     histogram_quantile(
+                                0.95,
+                                sum by (le) (
+                                  rate(stremio_double_subtitles_subtitle_translation_duration_seconds_bucket[15m])
+                                )
+                              )
+                instant: true
+                intervalMs: 1000
+                legendFormat: __auto
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: C
+              queryType: expression
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 30
+                        type: gt
+                      operator:
+                        type: and
+                      query:
+                        params:
+                            - C
+                      reducer:
+                        params: []
+                        type: last
+                      type: query
+                datasource:
+                    type: __expr__
+                    uid: __expr__
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          noDataState: NoData
+          execErrState: Error
+          for: 15m
+          annotations:
+            description: Subtitle translation p95 duration is above 30 seconds
+            summary: Translation p95 is very slow
+          isPaused: false
+          notification_settings:
+            receiver: Telegram
+        - uid: ffnfm6cbglj40f
+          title: HighMemoryUsage
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: afneof28f1reoa
+              model:
+                editorMode: code
+                expr: |4
+                              stremio_double_subtitles_process_resident_memory_bytes / 1024 / 1024
+                instant: true
+                intervalMs: 1000
+                legendFormat: __auto
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: C
+              queryType: expression
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 512
+                        type: gt
+                      operator:
+                        type: and
+                      query:
+                        params:
+                            - C
+                      reducer:
+                        params: []
+                        type: last
+                      type: query
+                datasource:
+                    type: __expr__
+                    uid: __expr__
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          noDataState: NoData
+          execErrState: Error
+          for: 10m
+          annotations:
+            description: Process RSS memory is above 512 MB for 10 minutes
+            summary: High memory usage
+          isPaused: false
+          notification_settings:
+            receiver: Telegram
+        - uid: afnfm9cjypgxsf
+          title: HighCPUUsage
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: afneof28f1reoa
+              model:
+                editorMode: code
+                expr: "          rate(stremio_double_subtitles_process_cpu_user_seconds_total[5m])\n          +\n          rate(stremio_double_subtitles_process_cpu_system_seconds_total[5m])\n          "
+                instant: true
+                intervalMs: 1000
+                legendFormat: __auto
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: C
+              queryType: expression
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0.8
+                        type: gt
+                      operator:
+                        type: and
+                      query:
+                        params:
+                            - C
+                      reducer:
+                        params: []
+                        type: last
+                      type: query
+                datasource:
+                    type: __expr__
+                    uid: __expr__
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          noDataState: NoData
+          execErrState: Error
+          for: 10m
+          annotations:
+            description: Process CPU usage is above 0.8 cores for 10 minutes
+            summary: High CPU usage
+          isPaused: false
+          notification_settings:
+            receiver: Telegram
+        - uid: dfnfmej0su1oga
+          title: LargeGeneratedSubtitles
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: afneof28f1reoa
+              model:
+                editorMode: code
+                expr: |4-
+                          sum by (source_language, target_language) (
+                            increase(stremio_double_subtitles_generated_subtitle_bytes_count[30m])
+                          )
+                          -
+                          sum by (source_language, target_language) (
+                            increase(stremio_double_subtitles_generated_subtitle_bytes_bucket{le="100000"}[30m])
+                          )
+                instant: true
+                intervalMs: 1000
+                legendFormat: __auto
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: C
+              queryType: expression
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0
+                        type: gt
+                      operator:
+                        type: and
+                      query:
+                        params:
+                            - C
+                      reducer:
+                        params: []
+                        type: last
+                      type: query
+                datasource:
+                    type: __expr__
+                    uid: __expr__
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          noDataState: NoData
+          execErrState: Error
+          for: 5m
+          annotations:
+            description: At least one generated subtitle exceeded 100 kB in the last 30 minutes
+            summary: Large generated subtitles detected
+          isPaused: false
+          notification_settings:
+            receiver: Telegram

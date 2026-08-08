@@ -1,0 +1,6 @@
+pnpm lint
+pnpm format
+
+# add any changes to staged files after formatting
+
+git add .

@@ -1,0 +1,400 @@
+:root {
+    color-scheme: dark;
+    font-family:
+        Inter,
+        ui-sans-serif,
+        system-ui,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+    background: #101116;
+    color: #f4f6fb;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    background:
+        radial-gradient(circle at top left, rgba(83, 117, 255, 0.24), transparent 34rem),
+        linear-gradient(135deg, #101116 0%, #171922 48%, #101116 100%);
+}
+
+.shell {
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 32px 16px;
+}
+
+.layout {
+    width: min(1144px, 100%);
+    display: grid;
+    grid-template-columns: minmax(360px, 460px) minmax(460px, 660px);
+    gap: 24px;
+    align-items: center;
+    justify-content: center;
+}
+
+.panel {
+    position: relative;
+    width: min(460px, 100%);
+    padding: 28px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    background: rgba(22, 24, 33, 0.92);
+}
+
+.header-links {
+    position: absolute;
+    top: 18px;
+    right: 18px;
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
+}
+
+.github-link svg,
+.stremio-addons-link svg {
+    display: block;
+    width: 20px;
+    height: 20px;
+}
+
+.github-link,
+.stremio-addons-link {
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    color: #c8d2ff;
+    background: rgba(255, 255, 255, 0.05);
+    transition:
+        background 120ms ease,
+        color 120ms ease;
+}
+
+.github-link:hover,
+.stremio-addons-link:hover {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.github-link:focus-visible,
+.stremio-addons-link:focus-visible {
+    outline: 2px solid #c8d2ff;
+    outline-offset: 3px;
+}
+
+.github-link svg {
+    fill: currentColor;
+}
+
+h1 {
+    margin: 0;
+    font-size: 30px;
+    line-height: 1.1;
+}
+
+.summary {
+    margin: 12px 0 0;
+    color: #bcc3d4;
+    line-height: 1.4;
+}
+
+.config-form {
+    display: grid;
+    gap: 16px;
+    margin-top: 26px;
+}
+
+label {
+    display: grid;
+    gap: 7px;
+    color: #dfe5f6;
+    font-size: 14px;
+    font-weight: 650;
+}
+
+input,
+select,
+button {
+    width: 100%;
+    height: 44px;
+    border-radius: 8px;
+    font: inherit;
+}
+
+input,
+select {
+    border: 1px solid #34394a;
+    background: #11141d;
+    color: #f4f6fb;
+    padding: 0 12px;
+}
+
+fieldset {
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+
+legend {
+    margin: 0 0 8px;
+    color: #dfe5f6;
+    font-size: 14px;
+    font-weight: 650;
+}
+
+.provider-options {
+    display: grid;
+    gap: 9px;
+}
+
+.field-note {
+    margin: -2px 0 2px;
+    color: #aeb7ca;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.4;
+}
+
+.provider-option {
+    display: flex;
+    grid-template-columns: none;
+    align-items: center;
+    gap: 10px;
+    min-height: 38px;
+    padding: 0 10px;
+    border: 1px solid #34394a;
+    border-radius: 8px;
+    background: #11141d;
+    cursor: pointer;
+}
+
+.provider-option input {
+    width: 16px;
+    height: 16px;
+    padding: 0;
+}
+
+.groq-key-field[hidden] {
+    display: none;
+}
+
+.groq-key-field a {
+    color: #c8d2ff;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.test-api-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.test-button {
+    width: auto;
+    min-width: 120px;
+    height: 38px;
+    padding: 0 16px;
+    background: #2a3040;
+    color: #eef2ff;
+    font-weight: 650;
+}
+
+.test-button:hover:not(:disabled) {
+    background: #373f54;
+}
+
+.test-button:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.test-status {
+    min-height: 18px;
+    color: #aeb7ca;
+    font-size: 13px;
+}
+
+.test-status.success {
+    color: #99e2b4;
+}
+
+.test-status.error {
+    color: #ff8b8b;
+}
+
+button {
+    border: 0;
+    background: #6d7dff;
+    color: #ffffff;
+    font-weight: 750;
+    cursor: pointer;
+}
+
+button:hover {
+    background: #8190ff;
+}
+
+.install-note {
+    margin: 14px 0 0;
+    color: #aeb7ca;
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.manifest {
+    display: grid;
+    gap: 7px;
+    margin-top: 20px;
+    padding-top: 18px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    color: #aeb7ca;
+    font-size: 13px;
+}
+
+.manifest-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    align-items: center;
+}
+
+.manifest a {
+    color: #c8d2ff;
+    word-break: break-all;
+}
+
+.copy-button {
+    min-width: 72px;
+    height: 36px;
+    padding: 0 14px;
+    background: #2a3040;
+    color: #eef2ff;
+}
+
+.copy-button:hover {
+    background: #373f54;
+}
+
+.copy-status {
+    min-height: 18px;
+    color: #99e2b4;
+}
+
+.screenshots {
+    display: grid;
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    width: min(560px, 100%);
+    height: min(724px, calc(100vh - 64px));
+    min-width: 0;
+}
+
+.screenshot-card {
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
+    padding: 10px;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    background: rgba(22, 24, 33, 0.72);
+}
+
+.screenshot-card img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    border-radius: 6px;
+    object-fit: contain;
+}
+
+.screenshot-card figcaption {
+    display: grid;
+    gap: 3px;
+    margin-top: 9px;
+    color: #aeb7ca;
+    font-size: 13px;
+    line-height: 1.35;
+}
+
+.screenshot-card figcaption strong {
+    color: #dfe5f6;
+    font-size: 14px;
+}
+
+.screenshot-card-small {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.screenshot-card-small img {
+    width: 100%;
+    height: 100%;
+}
+
+.screenshot-card-small figcaption {
+    margin-top: 9px;
+}
+
+@media (max-width: 920px) {
+    .shell {
+        min-height: auto;
+        padding: 32px 16px;
+    }
+
+    .layout {
+        max-width: 620px;
+        grid-template-columns: 1fr;
+    }
+
+    .screenshots {
+        height: auto;
+        max-height: none;
+    }
+}
+
+@media (max-width: 480px) {
+    .panel {
+        padding: 22px;
+    }
+
+    .header-links {
+        position: static;
+        margin-top: -4px;
+        margin-bottom: 16px;
+    }
+
+    .github-link,
+    .stremio-addons-link {
+        width: 40px;
+        height: 40px;
+    }
+
+    .github-link svg,
+    .stremio-addons-link svg {
+        width: 22px;
+        height: 22px;
+    }
+
+    .manifest-row,
+    .screenshot-card-small {
+        grid-template-columns: 1fr;
+    }
+
+    .screenshot-card-small figcaption {
+        margin-top: 9px;
+    }
+}

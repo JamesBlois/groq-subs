@@ -1,0 +1,7 @@
+.git
+.github
+debug-subtitles
+Dockerfile
+node_modules
+npm-debug.log*
+pnpm-debug.log*

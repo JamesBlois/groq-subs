@@ -1,0 +1,149 @@
+const assert = require("assert");
+const { getSubtitleConfig } = require("../lib/config");
+const { translateGroqBatch, testGroqApiKey, GROQ_MODELS, DEFAULT_GROQ_MODEL } = require("../lib/groq-translator");
+
+describe("Groq translator", function () {
+    const originalFetch = global.fetch;
+    const originalGroqApiKey = process.env.GROQ_API_KEY;
+    const originalGroqModel = process.env.GROQ_MODEL;
+
+    beforeEach(function () {
+        // Start each test with a clean Groq env so tests are isolated from real keys.
+        delete process.env.GROQ_API_KEY;
+        delete process.env.GROQ_MODEL;
+    });
+
+    afterEach(function () {
+        if (originalGroqApiKey === undefined) {
+            delete process.env.GROQ_API_KEY;
+        } else {
+            process.env.GROQ_API_KEY = originalGroqApiKey;
+        }
+        if (originalGroqModel === undefined) {
+            delete process.env.GROQ_MODEL;
+        } else {
+            process.env.GROQ_MODEL = originalGroqModel;
+        }
+        global.fetch = originalFetch;
+    });
+
+    it("lists six Groq models", function () {
+        assert.equal(GROQ_MODELS.length, 6);
+        assert.ok(GROQ_MODELS.includes("groq/compound-mini"));
+        assert.ok(GROQ_MODELS.includes("llama-3.1-8b-instant"));
+        assert.ok(GROQ_MODELS.includes("llama-3.3-70b-versatile"));
+        assert.ok(GROQ_MODELS.includes("openai/gpt-oss-120b"));
+        assert.ok(GROQ_MODELS.includes("openai/gpt-oss-20b"));
+        assert.ok(GROQ_MODELS.includes("qwen/qwen3.6-27b"));
+    });
+
+    it("defaults to a sensible Groq model", function () {
+        assert.equal(DEFAULT_GROQ_MODEL, "llama-3.3-70b-versatile");
+    });
+
+    it("returns the source lines when the API key is missing", async function () {
+        const translated = await translateGroqBatch(["Hello", "World"], {});
+        assert.deepEqual(translated, ["Hello", "World"]);
+    });
+
+    it("posts batches to Groq and parses numbered translations", async function () {
+        const config = getSubtitleConfig({ groqApiKey: "gsk_test", sourceLang: "en", targetLang: "vi" });
+        const requests = [];
+        global.fetch = async (url, options) => {
+            requests.push({ body: JSON.parse(options.body), headers: options.headers, url });
+            return {
+                ok: true,
+                async json() {
+                    return {
+                        choices: [
+                            {
+                                message: {
+                                    content: "1. Xin chào\n2. Thế giới",
+                                },
+                            },
+                        ],
+                    };
+                },
+            };
+        };
+
+        const translated = await translateGroqBatch(["Hello", "World"], config);
+
+        assert.deepEqual(translated, ["Xin chào", "Thế giới"]);
+        assert.equal(requests[0].url, "https://api.groq.com/openai/v1/chat/completions");
+        assert.equal(requests[0].headers.Authorization, "Bearer gsk_test");
+        assert.equal(requests[0].body.model, DEFAULT_GROQ_MODEL);
+        assert.ok(requests[0].body.messages[0].content.includes("Vietnamese"));
+    });
+
+    it("uses the configured Groq model", async function () {
+        const config = getSubtitleConfig({
+            groqApiKey: "gsk_test",
+            sourceLang: "en",
+            targetLang: "vi",
+            groqModel: "llama-3.1-8b-instant",
+        });
+        const requests = [];
+        global.fetch = async (url, options) => {
+            requests.push({ body: JSON.parse(options.body) });
+            return {
+                ok: true,
+                async json() {
+                    return { choices: [{ message: { content: "1. Xin chào" } }] };
+                },
+            };
+        };
+
+        await translateGroqBatch(["Hello"], config);
+        assert.equal(requests[0].body.model, "llama-3.1-8b-instant");
+    });
+
+    it("falls back to source text when line count mismatches", async function () {
+        const config = getSubtitleConfig({ groqApiKey: "gsk_test", sourceLang: "en", targetLang: "vi" });
+        global.fetch = async () => ({
+            ok: true,
+            async json() {
+                return { choices: [{ message: { content: "1. Xin chào" } }] };
+            },
+        });
+
+        const translated = await translateGroqBatch(["Hello", "World"], config);
+        assert.deepEqual(translated, ["Hello", "World"]);
+    });
+
+    it("reports an invalid API key via testGroqApiKey", async function () {
+        global.fetch = async () => ({
+            ok: false,
+            status: 401,
+            async json() {
+                return { error: { message: "Invalid API key" } };
+            },
+        });
+
+        const result = await testGroqApiKey({ groqApiKey: "bad", groqModel: DEFAULT_GROQ_MODEL });
+        assert.equal(result.ok, false);
+        assert.equal(result.status, 401);
+        assert.match(result.message, /Invalid API key/);
+    });
+
+    it("reports a valid API key via testGroqApiKey", async function () {
+        global.fetch = async () => ({
+            ok: true,
+            status: 200,
+            async json() {
+                return { choices: [{ message: { content: "ok" } }] };
+            },
+        });
+
+        const result = await testGroqApiKey({ groqApiKey: "good", groqModel: DEFAULT_GROQ_MODEL });
+        assert.equal(result.ok, true);
+        assert.equal(result.status, 200);
+        assert.equal(result.model, DEFAULT_GROQ_MODEL);
+    });
+
+    it("reports a missing API key via testGroqApiKey", async function () {
+        const result = await testGroqApiKey({});
+        assert.equal(result.ok, false);
+        assert.equal(result.status, 401);
+    });
+});
