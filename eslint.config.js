@@ -22,6 +22,7 @@ module.exports = [
                 process: "readonly",
                 require: "readonly",
                 setTimeout: "readonly",
+                setInterval: "readonly",
                 window: "readonly",
                 __dirname: "readonly",
                 describe: "readonly",

@@ -19,7 +19,7 @@ const {
     withRequestBaseUrl,
 } = require("./lib/public-url");
 const { createRateLimiters } = require("./lib/rate-limit");
-const { renderConfigPage } = require("./lib/web-page");
+const { renderConfigPage, renderStatusPage } = require("./lib/web-page");
 const { getGeneratedSubtitleResponse, getJobsStatus } = require("./subtitle-service");
 const { getGeneratedSubtitleCacheStats } = require("./lib/generated-subtitle-cache");
 const { testGroqApiKey, DEFAULT_GROQ_MODEL, breaker, getProviders } = require("./lib/groq-translator");
@@ -265,28 +265,48 @@ function createApp() {
         }
     });
 
+    // Build the structured status payload shared by the JSON API and the dashboard.
+    async function buildStatusPayload() {
+        const jobStats = getJobsStatus();
+        const cacheStats = getGeneratedSubtitleCacheStats();
+        const providers = getProviders({}).map((p) => ({
+            id: p.id,
+            baseUrl: p.baseUrl,
+            apiKeyConfigured: Boolean(p.apiKey),
+            models: p.models.map((model) => ({
+                model,
+                circuitOpen: breaker.isOpen(`${p.id}:${model}`),
+            })),
+        }));
+        return {
+            addon: addonInterface.manifest.name,
+            groqApiKeyConfigured: Boolean(process.env.GROQ_API_KEY),
+            llmProviderConfigured: Boolean(process.env.LLM_BASE_URL && process.env.LLM_API_KEY),
+            defaultModel: process.env.GROQ_MODEL || DEFAULT_GROQ_MODEL,
+            providers,
+            cache: cacheStats,
+            jobs: jobStats,
+        };
+    }
+
+    // Browser-friendly dashboard (HTML). JSON consumers (scripts/metrics) use /status.json
+    // or send Accept: application/json.
     app.get("/status", async (req, res, next) => {
         try {
-            const jobStats = getJobsStatus();
-            const cacheStats = getGeneratedSubtitleCacheStats();
-            const providers = getProviders({}).map((p) => ({
-                id: p.id,
-                baseUrl: p.baseUrl,
-                apiKeyConfigured: Boolean(p.apiKey),
-                models: p.models.map((model) => ({
-                    model,
-                    circuitOpen: breaker.isOpen(`${p.id}:${model}`),
-                })),
-            }));
-            res.json({
-                addon: addonInterface.manifest.name,
-                groqApiKeyConfigured: Boolean(process.env.GROQ_API_KEY),
-                llmProviderConfigured: Boolean(process.env.LLM_BASE_URL && process.env.LLM_API_KEY),
-                defaultModel: process.env.GROQ_MODEL || DEFAULT_GROQ_MODEL,
-                providers,
-                cache: cacheStats,
-                jobs: jobStats,
-            });
+            const wantsJson = (req.get("accept") || "").includes("application/json") || req.query.format === "json";
+            if (wantsJson) {
+                res.json(await buildStatusPayload());
+                return;
+            }
+            res.type("html").send(renderStatusPage());
+        } catch (error) {
+            next(error);
+        }
+    });
+
+    app.get("/status.json", async (req, res, next) => {
+        try {
+            res.json(await buildStatusPayload());
         } catch (error) {
             next(error);
         }
