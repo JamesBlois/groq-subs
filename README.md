@@ -96,3 +96,19 @@ LLM_MODELS=zhipuai/glm-5.2,deepseek-ai/deepseek-r1,qwen/qwen3-235b
 ```
 
 Check availability and quota from the web UI ("Check models quota") or `GET /status`.
+
+### Streaming & timeouts (large models)
+
+Translation and the "Check models" probe both use **streaming** (`stream: true`). Large hosted
+models (NVIDIA NIM: Nemotron, MiniMax, GLM, DeepSeek) have a long time-to-first-token; a
+non-streaming request waits for the whole completion before the first byte, so it times out even
+while the provider is still generating. Streaming flushes tokens immediately, keeping the
+connection alive — a slow-but-live model reports as available and translates successfully instead
+of showing "⏱ Hết giờ".
+
+If a connection goes truly dead, an idle/total timeout aborts it so the addon falls back to the
+next model instead of hanging forever. Tune via env (milliseconds):
+
+- `LLM_IDLE_TIMEOUT_MS` (default `60000`) — max gap between stream tokens.
+- `LLM_TOTAL_TIMEOUT_MS` (default `180000`) — hard ceiling for one request.
+- `PROBE_TIMEOUT_MS` (default `20000`) — per-model dashboard probe (time to first token).

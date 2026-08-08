@@ -11,6 +11,7 @@ const {
     parseRetryAfterMs,
 } = require("../lib/groq-translator");
 const { translateCues } = require("../lib/translator");
+const { streamChatCompletion } = require("../lib/llm-stream");
 
 describe("Groq translator", function () {
     const originalFetch = global.fetch;
@@ -435,4 +436,125 @@ describe("Groq translator", function () {
         assert.ok(attempted.some((m) => m !== "llama-3.3-70b-versatile"));
         breaker.reset();
     });
+
+    it("chatCompletion requests streaming and accumulates SSE deltas into one content string", async function () {
+        // Simulates a NVIDIA-style provider that streams tokens across multiple chunks.
+        let sentStreamTrue = false;
+        global.fetch = async (url, options) => {
+            const body = JSON.parse(options.body);
+            sentStreamTrue = body.stream === true;
+            const chunks = [
+                `data: ${JSON.stringify({ choices: [{ delta: { content: "1. Xin" } }] })}\n\n`,
+                `data: ${JSON.stringify({ choices: [{ delta: { content: " chào" } }] })}\n\n`,
+                `data: ${JSON.stringify({ choices: [{ delta: {} }] })}\n\n`,
+                `data: [DONE]\n\n`,
+            ];
+            return {
+                ok: true,
+                status: 200,
+                body: toReadableStream(chunks.join("")),
+            };
+        };
+
+        const { response, data } = await streamChatCompletion({
+            endpoint: "https://integrate.api.nvidia.com/v1/chat/completions",
+            apiKey: "nvapi_test",
+            model: "z-ai/glm-5.2",
+            messages: [{ role: "user", content: "hi" }],
+        });
+        assert.equal(sentStreamTrue, true);
+        assert.equal(response.ok, true);
+        assert.equal(data.choices[0].message.content, "1. Xin chào");
+    });
+
+    it("streamChatCompletion falls back to buffered json when the provider does not stream a body", async function () {
+        // Some proxies buffer the whole response (no response.body); streaming must still work.
+        global.fetch = async () => ({
+            ok: true,
+            status: 200,
+            async json() {
+                return { choices: [{ message: { content: "1. Xin chào" } }] };
+            },
+        });
+        const { response, data } = await streamChatCompletion({
+            endpoint: "https://example.test/v1/chat/completions",
+            apiKey: "k",
+            model: "m",
+            messages: [{ role: "user", content: "hi" }],
+        });
+        assert.equal(response.ok, true);
+        assert.equal(data.choices[0].message.content, "1. Xin chào");
+    });
+
+    it("streamChatCompletion classifies a non-ok response (e.g. 429) without reading a stream", async function () {
+        global.fetch = async () => ({
+            ok: false,
+            status: 429,
+            async json() {
+                return { error: { message: "Please try again in 1m" } };
+            },
+        });
+        const { response, data } = await streamChatCompletion({
+            endpoint: "https://example.test/v1/chat/completions",
+            apiKey: "k",
+            model: "m",
+            messages: [{ role: "user", content: "hi" }],
+        });
+        assert.equal(response.ok, false);
+        assert.equal(response.status, 429);
+        assert.match(data.error.message, /try again/);
+    });
+
+    it("streamChatCompletion aborts and rejects when no chunks arrive within the idle timeout", async function () {
+        this.timeout(15000);
+        // Simulates a connection that stays open but never sends any bytes (dead NVIDIA endpoint).
+        // Only the idle timeout can break it, after which the caller falls back to the next model.
+        const prevIdle = process.env.LLM_IDLE_TIMEOUT_MS;
+        const prevTotal = process.env.LLM_TOTAL_TIMEOUT_MS;
+        process.env.LLM_IDLE_TIMEOUT_MS = "500";
+        process.env.LLM_TOTAL_TIMEOUT_MS = "5000";
+        global.fetch = async () => ({
+            ok: true,
+            status: 200,
+            body: new NeverReadableStream(),
+        });
+        await assert.rejects(
+            streamChatCompletion({
+                endpoint: "https://example.test/v1/chat/completions",
+                apiKey: "k",
+                model: "m",
+                messages: [{ role: "user", content: "hi" }],
+            }),
+        );
+        if (prevIdle === undefined) delete process.env.LLM_IDLE_TIMEOUT_MS;
+        else process.env.LLM_IDLE_TIMEOUT_MS = prevIdle;
+        if (prevTotal === undefined) delete process.env.LLM_TOTAL_TIMEOUT_MS;
+        else process.env.LLM_TOTAL_TIMEOUT_MS = prevTotal;
+    });
 });
+
+function toReadableStream(text) {
+    const encoder = new TextEncoder();
+    return new ReadableStream({
+        start(controller) {
+            controller.enqueue(encoder.encode(text));
+            controller.close();
+        },
+    });
+}
+
+// A ReadableStream whose read() never resolves — simulates a connection that stays open but
+// never sends any bytes, so only the idle/total timeout can break it.
+class NeverReadableStream {
+    constructor() {
+        this.locked = false;
+    }
+    getReader() {
+        return {
+            read() {
+                return new Promise(() => {});
+            },
+            releaseLock() {},
+        };
+    }
+}

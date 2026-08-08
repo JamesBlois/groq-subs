@@ -31,6 +31,9 @@ module.exports = [
                 after: "readonly",
                 afterEach: "readonly",
                 btoa: "readonly",
+                ReadableStream: "readonly",
+                TextDecoder: "readonly",
+                TextEncoder: "readonly",
             },
         },
         rules: {

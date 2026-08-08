@@ -98,9 +98,14 @@ function createApp() {
     // every model (probing is slow, especially for NVIDIA models).
     let modelsStatusCache = null; // { at, payload }
 
-    // Probe one (provider, model) with a tiny request, capped at PROBE_TIMEOUT_MS so a single
-    // slow/hanging model cannot delay the whole dashboard.
-    const PROBE_TIMEOUT_MS = 8000;
+    // Probe one (provider, model) with a tiny STREAMING request. We only need the first token
+    // (or stream end) to confirm the model answers — we do NOT wait for the full completion,
+    // which is what made large NVIDIA models (Nemotron, MiniMax, GLM, DeepSeek) report
+    // "⏱ Hết giờ": their time-to-first-token exceeds a non-streaming wait. Streaming flushes
+    // immediately, so a live-but-slow model is correctly reported as available. A per-probe
+    // timeout still guards against a genuinely dead connection so one model cannot block the
+    // dashboard.
+    const PROBE_TIMEOUT_MS = Number(process.env.PROBE_TIMEOUT_MS || 20_000);
     async function probeModel(provider, model) {
         const modelKey = `${provider.id}:${model}`;
         // Skip the live probe for models already known to be in rate-limit cooldown: their
@@ -123,6 +128,7 @@ function createApp() {
                 headers: {
                     "Content-Type": "application/json",
                     Authorization: `Bearer ${provider.apiKey}`,
+                    Accept: "text/event-stream",
                 },
                 body: JSON.stringify({
                     model,
@@ -132,22 +138,38 @@ function createApp() {
                     ],
                     temperature: 0,
                     max_tokens: 5,
+                    stream: true,
                 }),
                 signal: controller.signal,
             });
-            const data = await response.json().catch(() => ({}));
-            let state = "unknown";
-            if (response.ok) state = "available";
-            else if (response.status === 429) state = "rate_limited";
-            else if (response.status === 403) state = "blocked";
-            else if (response.status === 401) state = "invalid_key";
+
+            if (!response.ok) {
+                // Error responses are regular JSON, not a stream.
+                const data = await response.json().catch(() => ({}));
+                let state = "unknown";
+                if (response.status === 429) state = "rate_limited";
+                else if (response.status === 403) state = "blocked";
+                else if (response.status === 401) state = "invalid_key";
+                return {
+                    provider: provider.id,
+                    model,
+                    state,
+                    circuitOpen: breaker.isOpen(modelKey),
+                    message: data.error?.message,
+                    status: response.status,
+                };
+            }
+
+            // A 200 with a stream: any chunk received => the model is live and answering.
+            // Resolve as available without consuming the (potentially long) rest of the stream.
+            await firstStreamChunk(response);
             return {
                 provider: provider.id,
                 model,
-                state,
+                state: "available",
                 circuitOpen: breaker.isOpen(modelKey),
-                message: data.error?.message,
-                status: response.status,
+                message: undefined,
+                status: 200,
             };
         } catch (err) {
             const timedOut = err.name === "AbortError";
@@ -161,6 +183,23 @@ function createApp() {
             };
         } finally {
             clearTimeout(timer);
+        }
+    }
+
+    // Resolve as soon as the SSE stream yields its first data chunk, then stop reading. For a
+    // provider that buffers the whole response (no body / non-SSE), fall back to json() so the
+    // probe still resolves instead of hanging.
+    async function firstStreamChunk(response) {
+        if (!response.body) {
+            await response.json().catch(() => ({}));
+            return;
+        }
+        const reader = response.body.getReader();
+        try {
+            const { value } = await reader.read();
+            if (!value) await response.json().catch(() => ({}));
+        } finally {
+            reader.releaseLock?.();
         }
     }
 
