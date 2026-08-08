@@ -2,7 +2,7 @@
 
 Fetches subtitles from the public Stremio OpenSubtitles v3 addon, translates them with the **Groq API**, merges them together and serves generated WebVTT subtitles to Stremio. A Groq API key is required.
 
-The translation prompt follows high-quality cinema/Asian-drama subtitle rules (Vietnamese-ized): correct pronoun usage (Anh-Em, Tớ-Cậu, Hắn-Tôi...), no profanity, no "Mày-Tao", natural localized phrasing.
+The translation prompt follows high-quality cinema/Asian-drama subtitle rules (Vietnamese-ized): translate only the actual dialogue/lyrics (not on-screen text), preserve meaning/context/emotion/personality, use natural localized phrasing, consistent context-appropriate pronouns (Anh-Em, Tớ-Cậu, Tôi-Anh, Hắn-Tôi...), avoid "Mày-Tao" and profanity while keeping emotional intensity, no extra narration or invented details, and concise TTS-friendly output. Subtitle numbers, timestamps, formatting tags and segment structure are preserved exactly (never merged/split/recalculated), and strict 1:1 cue alignment is enforced so translations never drift out of sync with the video. Priority: Meaning → Context → Character voice → Natural Vietnamese → Consistent pronouns → Subtitle format.
 
 ![Screenshot of web interface](img/screenshot.webp "Stremio with double subtitles")
 

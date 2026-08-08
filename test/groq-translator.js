@@ -3,6 +3,8 @@ const { getSubtitleConfig } = require("../lib/config");
 const {
     translateGroqBatch,
     testGroqApiKey,
+    buildSystemInstruction,
+    parseTranslations,
     GROQ_MODELS,
     DEFAULT_GROQ_MODEL,
     breaker,
@@ -365,6 +367,72 @@ describe("Groq translator", function () {
             ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"].includes(m),
         );
         assert.ok(reasoningAttempted, "a reasoning model should be tried when non-reasoning are rate-limited");
+        breaker.reset();
+    });
+
+    it("buildSystemInstruction contains the Vietnamese movie subtitle rules and priority", function () {
+        const instruction = buildSystemInstruction(getSubtitleConfig({ sourceLang: "en", targetLang: "vi" }));
+        assert.ok(instruction.includes("VIETNAMESE MOVIE SUBTITLE TRANSLATION"));
+        assert.ok(instruction.includes("voice narration"));
+        assert.ok(instruction.includes("Mày-Tao"));
+        assert.ok(/Anh-Em.*Tớ-Cậu.*Tôi-Anh.*Hắn-Tôi/.test(instruction));
+        assert.ok(instruction.includes("PRIORITY"));
+        assert.ok(instruction.includes("Meaning -> Context -> Character voice"));
+        assert.ok(instruction.includes("English") && instruction.includes("Vietnamese"));
+    });
+
+    it("buildSystemInstruction forbids extra details and enforces 1:1 alignment", function () {
+        const instruction = buildSystemInstruction(getSubtitleConfig({ sourceLang: "en", targetLang: "vi" }));
+        assert.ok(instruction.includes("Do NOT add explanations, narration, actions, visual descriptions"));
+        assert.ok(instruction.includes("one translated line per input line"));
+        assert.ok(instruction.includes("NEVER merge"));
+        assert.ok(instruction.includes("NEVER split"));
+    });
+
+    it("parseTranslations returns exact count for matching output", function () {
+        const out = parseTranslations("1. Xin chào\n2. Thế giới", 2);
+        assert.deepEqual(out, ["Xin chào", "Thế giới"]);
+    });
+
+    it("parseTranslations does NOT silently merge extra lines into the last cue", function () {
+        // Model split one input line into two (a real misalignment failure mode).
+        // Old behaviour appended the surplus onto the last line; now the count must mismatch
+        // so the caller falls back instead of serving drifted, out-of-context translations.
+        const out = parseTranslations("1. Xin chào\n2. Thế giới\n3. Thêm chi tiết", 2);
+        assert.equal(out.length, 3, "surplus lines must NOT be merged away");
+    });
+
+    it("parseTranslations does NOT silently pad missing lines", function () {
+        const out = parseTranslations("1. Xin chào", 2);
+        assert.equal(out.length, 1, "missing lines must surface as a mismatch, not be padded");
+    });
+
+    it("falls back to the next model when a model returns too many lines (over-count)", async function () {
+        this.timeout(15000);
+        breaker.reset();
+        const config = getSubtitleConfig({ groqApiKey: "gsk_test", sourceLang: "en", targetLang: "vi" });
+        const attempted = [];
+        global.fetch = async (url, options) => {
+            const body = JSON.parse(options.body);
+            attempted.push(body.model);
+            // Default model splits one cue into two -> over-count -> must fail this attempt.
+            if (body.model === "llama-3.3-70b-versatile") {
+                return {
+                    ok: true,
+                    json: async () => ({ choices: [{ message: { content: "1. Xin chào\n2. Thế giới\n3. Lỗi" } }] }),
+                };
+            }
+            return {
+                ok: true,
+                json: async () => ({ choices: [{ message: { content: "1. Xin chào\n2. Thế giới" } }] }),
+            };
+        };
+
+        const translated = await translateGroqBatch(["Hello", "World"], config);
+        assert.deepEqual(translated, ["Xin chào", "Thế giới"]);
+        // The over-count model was tried AND then a fallback model produced the correct count.
+        assert.ok(attempted.includes("llama-3.3-70b-versatile"));
+        assert.ok(attempted.some((m) => m !== "llama-3.3-70b-versatile"));
         breaker.reset();
     });
 });
