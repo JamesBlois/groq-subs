@@ -98,7 +98,8 @@ describe("Groq translator", function () {
         assert.equal(requests[0].body.model, "llama-3.1-8b-instant");
     });
 
-    it("falls back to source text when line count mismatches", async function () {
+    it("falls back to source text when all models return mismatched line counts", async function () {
+        this.timeout(15000);
         const config = getSubtitleConfig({ groqApiKey: "gsk_test", sourceLang: "en", targetLang: "vi" });
         global.fetch = async () => ({
             ok: true,
