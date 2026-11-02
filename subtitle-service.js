@@ -310,6 +310,11 @@ function createSubtitleOption(args, subtitle, config) {
         id: args.id,
         sourceLanguage: config.stremioSourceLanguage,
         targetLanguage: config.stremioTargetLanguage,
+        groqModel: config.groqModel,
+        credentialScope: crypto
+            .createHash("sha256")
+            .update(config.groqApiKey || process.env.GROQ_API_KEY || "")
+            .digest("hex"),
         subtitleId: subtitle.id,
         subtitleUrl: subtitle.url,
     });
